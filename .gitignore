@@ -1,0 +1,20 @@
+
+# Virtual environment
+.venv/
+# Python bytecode
+__pycache__/
+
+# Editor/IDE
+.vscode/
+# Build/dist
+build/
+dist/
+# Test/cache
+.pytest_cache/
+# OS files
+.DS_Store
+Thumbs.db
+# uv package manager artifacts
+uv.lock
+uv-packages.txt
+models/LLMs
