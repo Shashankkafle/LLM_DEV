@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+	<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+		<vType id="pkw" length="5.0" width="2.0" minGap="2.5" maxSpeed="11.111" accel="2.0" decel="4.5"/>
+		<vehicle id="0" depart="0">
+			<route edges="road_0_1_0 road_1_1_0"/>
+		</vehicle>
+		<vehicle id="1" depart="0">
+			<route edges="road_2_1_2 road_1_1_2"/>
+		</vehicle>
+		<vehicle id="2" depart="0">
+			<route edges="road_1_0_1 road_1_1_1"/>
+		</vehicle>
+		<vehicle id="3" depart="0">
+			<route edges="road_1_2_3 road_1_1_3"/>
+		</vehicle>
+		<vehicle id="4" depart="0">
+			<route edges="road_0_1_0 road_1_1_1"/>
+		</vehicle>
+		<vehicle id="5" depart="0">
+			<route edges="road_2_1_2 road_1_1_3"/>
+		</vehicle>
+		<vehicle id="6" depart="0">
+			<route edges="road_1_2_3 road_1_1_0"/>
+		</vehicle>
+		<vehicle id="7" depart="0">
+			<route edges="road_1_0_1 road_1_1_2"/>
+		</vehicle>
+	</routes>

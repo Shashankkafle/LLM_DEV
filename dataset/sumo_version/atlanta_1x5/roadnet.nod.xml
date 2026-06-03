@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<nodes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/nodes_file.xsd">
+	<node id="2390850312" x="388.43" y="1709.67" type="priority"/>
+	<node id="5198748651" x="516.08" y="1588.64" type="priority"/>
+	<node id="69227161" x="294.73" y="1222.49" type="priority"/>
+	<node id="69227168" x="369.49" y="1219.91" type="traffic_light_right_on_red"/>
+	<node id="69227178" x="508.49" y="1202.73" type="priority"/>
+	<node id="69249210" x="440.36" y="1470.24" type="traffic_light_right_on_red"/>
+	<node id="69249214" x="518.1" y="1469.79" type="priority"/>
+	<node id="69387063" x="319.5" y="1357.24" type="priority"/>
+	<node id="69387071" x="436.92" y="1345.54" type="traffic_light_right_on_red"/>
+	<node id="69387078" x="515.19" y="1343.86" type="priority"/>
+	<node id="69421271" x="315.16" y="1600.38" type="priority"/>
+	<node id="69421277" x="424.26" y="1594.85" type="traffic_light_right_on_red"/>
+	<node id="69515841" x="345.99" y="809.91" type="priority"/>
+	<node id="69515842" x="358.74" y="1053.31" type="traffic_light_right_on_red"/>
+	<node id="69538856" x="275.73" y="1036.32" type="traffic_light_right_on_red"/>
+	<node id="69588600" x="498.39" y="1060.4" type="priority"/>
+	<node id="69614527" x="179.37" y="1021.97" type="priority"/>
+</nodes>

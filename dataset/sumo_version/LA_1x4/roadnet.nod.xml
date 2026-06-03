@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<nodes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/nodes_file.xsd">
+	<node id="2200742478" x="337.87" y="498.73" type="priority"/>
+	<node id="2200742494" x="415.76" y="458.94" type="traffic_light_right_on_red"/>
+	<node id="2302151437" x="506.32" y="599.75" type="priority"/>
+	<node id="2358086434" x="432.27" y="646.72" type="priority"/>
+	<node id="2358086440" x="444.35" y="541.02" type="traffic_light_right_on_red"/>
+	<node id="2358086443" x="384.17" y="390.47" type="traffic_light_right_on_red"/>
+	<node id="2358086459" x="437.45" y="506.32" type="traffic_light_right_on_red"/>
+	<node id="2358086462" x="257.25" y="329.64" type="traffic_light_right_on_red"/>
+	<node id="2358091642" x="262.84" y="138.8" type="priority"/>
+	<node id="269388345" x="405.99" y="606.18" type="traffic_light_right_on_red"/>
+	<node id="269388769" x="441.61" y="521.35" type="traffic_light_right_on_red"/>
+	<node id="269388771" x="431.62" y="490.31" type="traffic_light_right_on_red"/>
+	<node id="269390046" x="285.0" y="183.24" type="traffic_light_right_on_red"/>
+	<node id="269390069" x="375.86" y="373.5" type="traffic_light_right_on_red"/>
+	<node id="3189601354" x="479.62" y="453.32" type="priority"/>
+	<node id="344050122" x="367.97" y="357.8" type="traffic_light_right_on_red"/>
+	<node id="361142995" x="444.36" y="600.97" type="traffic_light_right_on_red"/>
+	<node id="4075688776" x="301.42" y="219.37" type="traffic_light_right_on_red"/>
+	<node id="4075688777" x="351.5" y="325.07" type="traffic_light_right_on_red"/>
+	<node id="4075688778" x="376.68" y="375.19" type="traffic_light_right_on_red"/>
+	<node id="4075688779" x="390.07" y="405.0" type="traffic_light_right_on_red"/>
+	<node id="4075727445" x="445.55" y="570.64" type="traffic_light_right_on_red"/>
+	<node id="4757166090" x="210.25" y="352.53" type="priority"/>
+	<node id="4757166095" x="412.41" y="244.83" type="priority"/>
+	<node id="4757166098" x="400.95" y="256.83" type="priority"/>
+	<node id="4980717088" x="255.65" y="316.55" type="priority"/>
+	<node id="5547258318" x="331.6" y="609.09" type="priority"/>
+	<node id="cluster_16298125_4757166089" x="331.31" y="284.8" type="traffic_light_right_on_red"/>
+	<node id="gneJ0" x="347.96" y="540.57" type="priority"/>
+	<node id="gneJ2" x="362.18" y="105.64" type="priority"/>
+</nodes>
