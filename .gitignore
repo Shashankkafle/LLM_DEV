@@ -16,5 +16,4 @@ dist/
 Thumbs.db
 # uv package manager artifacts
 uv.lock
-uv-packages.txt
 models/LLMs

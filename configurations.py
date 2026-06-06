@@ -27,3 +27,18 @@ incoming_lane_2_outgoing_road = {
     "WT": "East",
     "WL": "North"
 }
+
+
+# only works with 3 lanedroads
+dataset_phase_configs = {
+"ETWT_green": "gggrrrrrrgggGGGrrrgggrrrrrrgggGGGrrr",
+"ETWT_yellow": "gggrrrrrrgggyyyrrrgggrrrrrrgggyyyrrr",
+"ELWL_green": "gggrrrrrrgggrrrGGGgggrrrrrrgggrrrGGG",
+"ELWL_yellow": "gggrrrrrrgggrrryyygggrrrrrrgggrrryyy",
+"NTST_green": "gggGGGrrrgggrrrrrrgggGGGrrrgggrrrrrr",
+"NTST_yellow": "gggyyyrrrgggrrrrrrgggyyyrrrgggrrrrrr",
+"NLSL_green": "gggrrrGGGgggrrrrrrgggrrrGGGgggrrrrrr",
+"NLSL_yellow": "gggrrryyygggrrrrrrgggrrryyygggrrrrrr",
+"all_red": "gggrrrrrrgggrrrrrrgggrrrrrrgggrrrrrr"
+
+}
