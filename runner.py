@@ -31,7 +31,7 @@ def main(args):
     intersection_phase_handlers = {}
     intersections = env.get_intersections()
     for intersection_id in intersections:
-        intersection_phase_handlers[intersection_id] = PhaseHandler(phases=conf["phases"].keys(), env=env, conf=conf, intersection_id=intersection_id, default_duration=conf["global_settings"]["default_green_duration"], start_phase='ETWT')
+        intersection_phase_handlers[intersection_id] = PhaseHandler( env=env, conf=conf, intersection_id=intersection_id, start_phase='ETWT')
     for step in range(args.simulation_steps):
         print(f"Simulation step: {step}")
         env.step()

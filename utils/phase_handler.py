@@ -2,21 +2,21 @@ PHASE_TYPES = ["ALL_RED", "GREEN", "YELLOW"]
 
 # handler to keep track of how long the current phase has been active and when to switch to the next phase
 class PhaseHandler:
-    def __init__(self, phases,env, conf, intersection_id, default_duration=30,red_duration=2,yellow_duration=3,start_phase='ETWT'):
-        self.phases = phases
-        self.duration = default_duration
+    def __init__(self,env, conf, intersection_id,start_phase='ETWT'):
+        
         self.switch_phase = False
         self.current_phase_type = "GREEN"
-        self.red_duration = red_duration
-        self.yellow_duration = yellow_duration
         self.next_phase = None
         self.conf = conf
+        self.phases = self.conf["phases"].keys()
+        self.duration = self.conf["global_settings"]["default_green_duration"]
         self.env = env
         self.intersection_id = intersection_id
-        if start_phase in phases:
+        if start_phase in self.phases:
             self.current_phase = start_phase
         else: 
-            self.current_phase = phases[0]  # default to the first phase if start_phase is not valid
+            
+            self.current_phase = list(self.phases)[0]  # default to the first phase if start_phase is not valid
 
     
     def step(self):
