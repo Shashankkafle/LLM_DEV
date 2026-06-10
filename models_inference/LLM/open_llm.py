@@ -36,9 +36,34 @@ class LLM_Inference:
                 "eos_token_id": self.tokenizer.eos_token_id
             }
 
+        # def inference(self, prompt):
+        #     inputs = self.tokenizer(prompt, return_tensors="pt").to(self.llm_model.device)
+        #     with torch.no_grad():
+        #         outputs = self.llm_model.generate(**inputs, **self.test_generation_kwargs)
+        #     response = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+        #     return response
+
+
         def inference(self, prompt):
-            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.llm_model.device)
+            # 1. Convert the list of dicts into a single formatted string for the model
+            formatted_prompt = self.tokenizer.apply_chat_template(
+                prompt,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            
+            # 2. Tokenize the newly formatted string
+            inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.llm_model.device)
+            
+            # 3. Generate the output
             with torch.no_grad():
                 outputs = self.llm_model.generate(**inputs, **self.test_generation_kwargs)
-            response = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+                
+            # 4. Slice the output to exclude the prompt
+            input_length = inputs.input_ids.shape[1]
+            generated_tokens = outputs[0, input_length:]  # [0] = first (only) batch item
+
+            # 5. Decode
+            response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            
             return response

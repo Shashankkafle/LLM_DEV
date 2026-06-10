@@ -1,5 +1,5 @@
 from sumo_env import SumoEnv
-# from utils.prompt_builder import getPrompt
+from utils.prompt_builder import getPrompt
 from models_inference.LLM.open_llm import LLM_Inference
 from utils.phase_handler import PhaseHandler
 from configurations import INTERSECTION_CONFIG as conf
@@ -42,20 +42,27 @@ def main(args):
                 
                 state_data = env.get_state(intersection_id) 
                 
-                # # Build the prompt for the LLM
-                # prompt = getPrompt(
-                #     state=state_data, 
-                #     current_phase=handler.current_phase, 
-                #     available_phases=conf["phases"].keys()
-                # )
+            # Define the missing variables required by getPrompt (TODO: Update these with real data later)
+                dummy_avg_speed = 10.0
+                dummy_length_dict = {"North": 100, "South": 100, "East": 100, "West": 100}
+                dummy_system_prompt = "You are an expert traffic signal control AI."
+                
+                #Build the prompt 
+                prompt = getPrompt(
+                    state_dict=state_data,
+                    avg_speed=dummy_avg_speed,
+                    system_prompt=dummy_system_prompt,
+                    length_dict=dummy_length_dict,
+                    phases=list(conf["phases"].keys())
+                )
                 
                 # Query the LLM for the next action 
-                # llm_output = llm.generate(prompt) 
+                llm_output = llm.inference(prompt) 
                 
                 # Parse the LLM output to get the next phase (and potentially duration)
-                # next_phase = llm_output.strip()
-                next_phase =  (list(conf["phases"].keys()))[step % len(conf["phases"].keys())]  # Placeholder for LLM output, cycling through phases for testing
-                duration = 30 # Defaulting to 30, or extract this from the LLM response
+                print(f"LLM Output for intersection {intersection_id} at step {step}: {llm_output}")
+                next_phase = llm_output.strip()
+                # next_phase =  (list(conf["phases"].keys()))[step % len(conf["phases"].keys())]  # Placeholder for LLM output, cycling through phases for testing
                 
                 # Fallback mechanism if the LLM hallucinates an invalid phase
                 if next_phase not in conf["phases"]:
@@ -63,10 +70,9 @@ def main(args):
                     next_phase = handler.current_phase
 
 
-                print(f"Step {step}: Intersection {intersection_id} - Current Phase: {handler.current_phase}, Next Phase: {next_phase}, Duration: {duration}")
                 # Apply the decision to the SUMO environment
                 
-                print(f"Activating phase {next_phase} for intersection {intersection_id} with duration {duration}")
+                print(f"Activating phase {next_phase} for intersection {intersection_id}")
                 # Reset and update the phase handler
                 handler.activate_phase(next_phase)
 
