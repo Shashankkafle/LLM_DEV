@@ -15,9 +15,12 @@ class SumoEnv:
     def step(self):
         traci.simulationStep()
     
-    def set_phase(self, intersection_id, phase_id):
-        traci.trafficlight.setPhase(intersection_id, phase_id)
-    
+    def set_phase(self, intersection_id, phase_config):
+        try:
+            traci.trafficlight.setRedYellowGreenState(intersection_id, phase_config)
+        except Exception as e:
+            print(f"Error occurred while setting phase for intersection {intersection_id}: {e}")
+
     def close(self):
         traci.close()
 
