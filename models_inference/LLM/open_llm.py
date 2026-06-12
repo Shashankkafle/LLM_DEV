@@ -6,7 +6,7 @@ import torch
 # only for inference, no training, so no need to set up optimizer, scheduler, etc. for LLM
 class LLM_Inference:
         def __init__(self,llm_path,max_new_tokens=512):
-                self.llm_path = os.path.abspath(self.llm_path)
+                self.llm_path = os.path.abspath(llm_path)
                 self.max_new_tokens = max_new_tokens
 
         def initialize_llm(self):
