@@ -3,7 +3,6 @@ from utils.prompt_builder import getPrompt
 from models_inference.LLM.open_llm import LLM_Inference
 from utils.phase_handler import PhaseHandler
 from configurations import INTERSECTION_CONFIG as conf
-# from configurations import green_phases
 import argparse
 
 
@@ -41,18 +40,11 @@ def main(args):
             if handler.switch_phase:
                 
                 state_data = env.get_state(intersection_id) 
-                
-            # Define the missing variables required by getPrompt (TODO: Update these with real data later)
-                dummy_avg_speed = 10.0
-                dummy_length_dict = {"North": 100, "South": 100, "East": 100, "West": 100}
-                dummy_system_prompt = "You are an expert traffic signal control AI."
-                
+                                
                 #Build the prompt 
                 prompt = getPrompt(
                     state_dict=state_data,
-                    avg_speed=dummy_avg_speed,
-                    system_prompt=dummy_system_prompt,
-                    length_dict=dummy_length_dict,
+
                     phases=list(conf["phases"].keys())
                 )
                 

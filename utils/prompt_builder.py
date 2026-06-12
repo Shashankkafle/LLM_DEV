@@ -1,86 +1,151 @@
+"""
+prompt_builder.py
+Utility functions to build the LLM prompt content based on the current state of the intersection.
+"""
+
 from configurations import INTERSECTION_CONFIG
 
-def state_dict_to_csv(state_dict):
-    """
-    Converts the state dictionary from SumoEnv into the CSV text format 
-    expected by the prompt builder.
-    """
-    # Header required by the prompt's instructions
-    header = "Lane,Early_Queued,Avg_Wait_Time,Segment_1,Segment_2,Segment_3,Segment_4"
-    rows = [header]
-    
-    # Extract lane states from the dictionary
-    lane_states = state_dict.get("lane_states", {})
-    
-    for lane_id, data in lane_states.items():
-        queued = data.get("early_queued", 0)
-        
-        # Defaulting wait time to 0.0 since it is not currently tracked in SumoEnv
-        wait_time = 0.0 
-        
-        segments = data.get("segments", {})
-        seg1 = segments.get("segment_1", 0)
-        seg2 = segments.get("segment_2", 0)
-        seg3 = segments.get("segment_3", 0)
-        
-        # Defaulting segment 4 to 0 since SumoEnv only calculates 3 segments
-        seg4 = 0 
-        
-        # Build the CSV row for this lane
-        row = f"{lane_id},{queued},{wait_time},{seg1},{seg2},{seg3},{seg4}"
-        rows.append(row)
-        
-    return "\n".join(rows)
+_MOVEMENT_DIRECTION = INTERSECTION_CONFIG["movement_directions"]
+_MOVEMENT_TYPE      = INTERSECTION_CONFIG["movement_types"]
 
-def getPrompt(state_dict, avg_speed, system_prompt, length_dict, phases):
-    state_txt = state_dict_to_csv(state_dict)
-    # fill information
-    signals_text = ""
-    for p in phases:
-        # Access the llm_description from the new centralized configuration
-        if p in INTERSECTION_CONFIG["phases"]:
-            signals_text += INTERSECTION_CONFIG["phases"][p]["llm_description"] + "\n"
-        else:
-            signals_text += f"- {p}: Unknown phase description.\n"
+def _phase_observation_block(phase_name: str, movement_states: dict) -> str:
+    """
+    Builds the observation block for one signal phase, e.g.:
 
-    prompt = [
-        {"role": "system",
-         "content": system_prompt},
-        {"role": "user",
-         "content": "A traffic light regulates a four-section intersection with northern, southern, eastern, and "
-                    "western sections, each containing two lanes: one for through traffic and one for left-turns. "
-                    f"The eastern and western lanes are {int(length_dict['East'])} meters long, while the northern and southern lanes are "
-                    f"{int(length_dict['North'])} meters in length. Each lane is further divided into four segments. Segment 1 spans from the "
-                    "10m mark of the lane to segment 2. Segment 2 begins at the 1/10 mark of the lane and links segment "
-                    "1 to segment 3. Segment 3 starts at the 1/3 mark of the lane and links segment 2 to segment 4. "
-                    "Segment 4 begins at the 2/3 mark of the lane, spanning from the end of segment 3 to the lane's end.\n\n"
-                    "The current lane statuses are:\n" + state_txt + "\n" +
-                    "This CSV table shows lane statuses, with the first column representing lanes, the second column "
-                    "displaying early queued vehicle counts, the third column showing the average time that early "
-                    "queued vehicles have waited in previous phases, and columns 4-7 indicating approaching vehicle "
-                    "counts in the four lane segments.\n\n"
-                    "Early queued vehicles have arrived at the intersection and await passage permission. Approaching "
-                    f"vehicles are at an average speed of {int(avg_speed)}m/s. If they can arrive at the intersection during the next "
-                    "phase, they may merge into the appropriate waiting queues (if they are NOT allowed to pass) or "
-                    "pass the intersection (if they are allowed to pass).\n\n"
-                    f"The traffic light has {len(phases)} signal phases. Each signal relieves vehicles' flow in the two specific "
-                    "lanes. The lanes relieving vehicles' flow under each traffic light phase are listed below:\n" +
-                    signals_text +
-                    "\nThe next signal phase will persist for 30 seconds.\n\n"
-                    "Please follow the following steps to provide your analysis (pay attention to accurate variable calculations in each step):\n"
-                    "- Step 1: Calculate the ranges of the four lane segments in different lanes.\n"
-                    "- Step 2: Identify the lane segments that vehicles travel on can potentially reach the intersection within the next phase.\n"
-                    "- Step 3: Analyzing the CSV table, identify the traffic conditions (early queued vehicle count, average waiting time, and the approaching vehicle count in segments identified in Step 2) in each lane.\n"
-                    "- Step 4: If no vehicle is permitted to pass the intersection within the next phase, analyze:\n"
-                    "a) The total cumulative waiting times of ALL early queued vehicles that will accumulate by the END of the next phase in each lane.\n"
-                    "b) The total waiting times of ALL vehicles from reachable segments within the next phase in each lane.\n"
-                    "c) The total waiting time of ALL queuing vehicles analyzed above in each lane.\n"
-                    "- Step 5: Considering the total waiting time, analyze the potential congestion level of the two allowed lanes of each signal if vehicles on these lanes cannot be relieved in the next phase.\n"
-                    "- Step 6: Considering the potential congestion level of the two allowed lanes of each signal, identify the most effective traffic signal that will most significantly improve the traffic condition during the next phase, which relieves vehicles' flow of the allowed lanes of the signal.\n\n"
-                    "Requirements:\n"
-                    "- Let's think step by step.\n"
-                    "- Your choice must be identified by the tag: <signal>YOUR_CHOICE</signal>."
-         }
+        Signal: NLSL
+        Allowed lanes: Northern and southern left-turn lanes
+        - Early queued: 4 (North), 3 (South), 7 (Total)
+        - Segment 1:    0 (North), 0 (South), 0 (Total)
+        - Segment 2:    0 (North), 0 (South), 0 (Total)
+        - Segment 3:    1 (North), 2 (South), 3 (Total)
+
+    `movement_states` is the sub-dict from SumoEnv.get_state() keyed by
+    movement name (e.g. "NTST", "ELWL", …).  Each value has:
+        {
+            "early_queued": int,
+            "segments": {"segment_1": int, "segment_2": int, "segment_3": int},
+            "lanes": { lane_id: {...} }   # per-lane detail, not used here
+        }
+    """
+
+    # Determine which two movement codes belong to this phase.
+    # Convention: phase name is two 2-char movement codes concatenated
+    # (e.g. "NTST" → ["NT", "ST"], "ELWL" → ["EL", "WL"]).
+    mov_a = phase_name[:2]   # e.g. "NT"
+    mov_b = phase_name[2:]   # e.g. "ST"
+
+    dir_a = _MOVEMENT_DIRECTION[mov_a]   # e.g. "North"
+    dir_b = _MOVEMENT_DIRECTION[mov_b]   # e.g. "South"
+    mov_type = _MOVEMENT_TYPE[mov_a]     # "through" or "left-turn"
+
+    # Fetch aggregated data from movement_states.
+    # Fall back to zeroed data if a movement isn't present (e.g. absent from map).
+    def _get(mov):
+        return movement_states.get(mov, {
+            "early_queued": 0,
+            "segments": {"segment_1": 0, "segment_2": 0, "segment_3": 0}
+        })
+
+    data_a = _get(mov_a)
+    data_b = _get(mov_b)
+
+    eq_a  = data_a["early_queued"]
+    eq_b  = data_b["early_queued"]
+    eq_tot = eq_a + eq_b
+
+    segs_a = data_a["segments"]
+    segs_b = data_b["segments"]
+
+    s1_a, s1_b = segs_a.get("segment_1", 0), segs_b.get("segment_1", 0)
+    s2_a, s2_b = segs_a.get("segment_2", 0), segs_b.get("segment_2", 0)
+    s3_a, s3_b = segs_a.get("segment_3", 0), segs_b.get("segment_3", 0)
+
+    # Allowed-lanes description line (matches paper wording)
+    allowed_desc = f"{dir_a}ern and {dir_b.lower()}ern {mov_type} lanes"
+
+    lines = [
+        f"Signal: {phase_name}",
+        f"Allowed lanes: {allowed_desc}",
+        f"- Early queued: {eq_a} ({dir_a}), {eq_b} ({dir_b}), {eq_tot} (Total)",
+        f"- Segment 1:    {s1_a} ({dir_a}), {s1_b} ({dir_b}), {s1_a + s1_b} (Total)",
+        f"- Segment 2:    {s2_a} ({dir_a}), {s2_b} ({dir_b}), {s2_a + s2_b} (Total)",
+        f"- Segment 3:    {s3_a} ({dir_a}), {s3_b} ({dir_b}), {s3_a + s3_b} (Total)",
     ]
+    return "\n".join(lines)
 
-    return prompt
+
+def build_observation(state_dict: dict, phases: list) -> str:
+    """
+    Assembles the full observation section for all phases, separated by
+    blank lines — ready to be dropped into the user prompt.
+    """
+    movement_states = state_dict.get("movement_states", {})
+    blocks = []
+    for phase_name in phases:
+        if phase_name in INTERSECTION_CONFIG["phases"]:
+            blocks.append(_phase_observation_block(phase_name, movement_states))
+    return "\n\n".join(blocks)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "You are an expert traffic signal control agent. "
+    "Traffic congestion is primarily dictated by early queued vehicles — "
+    "they have the most significant impact, so you must pay the most "
+    "attention to lanes with long queue lengths. "
+    "It is NOT urgent to consider vehicles in distant segments since they "
+    "are unlikely to reach the intersection soon."
+)
+
+
+def getPrompt(state_dict: dict, phases: list) -> list[dict]:
+    """
+    Returns a messages list  [{"role": ..., "content": ...}, ...]
+    ready to pass directly to an LLM inference call.
+
+    Parameters
+    ----------
+    state_dict : dict
+        Output of SumoEnv.get_state(intersection_id).
+        Must contain a "movement_states" key.
+    phases : list[str]
+        Ordered list of phase names to present to the LLM,
+        e.g. ["NTST", "ETWT", "NLSL", "ELWL"].
+    """
+    observation_text = build_observation(state_dict, phases)
+    num_phases = len(phases)
+    phase_list_str = ", ".join(phases)
+
+    user_content = (
+        "A traffic light regulates a four-section intersection with northern, "
+        "southern, eastern, and western sections. Each section has two incoming "
+        "lanes: one for through traffic and one for left-turns. Each lane is "
+        "divided into three segments — Segment 1 is closest to the intersection, "
+        "Segment 2 is in the middle, and Segment 3 is the farthest.\n\n"
+        "Early queued vehicles have arrived at the intersection and are waiting "
+        "for a green signal. Approaching vehicles are travelling toward the "
+        "intersection and are counted per segment.\n\n"
+        f"The traffic light has {num_phases} signal phases: {phase_list_str}. "
+        "The state of the intersection is listed below:\n\n"
+        f"{observation_text}\n\n"
+        "Please answer:\n"
+        "Which is the most effective traffic signal that will most significantly "
+        "improve the traffic condition during the next phase?\n\n"
+        "Requirements:\n"
+        "- Let's think step by step.\n"
+        "- You can only choose one of the signals listed above.\n"
+        "- Follow these steps:\n"
+        "  Step 1: Analyze the traffic conditions for each signal — consider "
+        "early queued vehicles (highest priority) and approaching vehicles in "
+        "nearby segments.\n"
+        "  Step 2: State your chosen signal.\n"
+        "- Your choice must be identified by the tag: <signal>YOUR_CHOICE</signal>."
+    )
+
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": user_content},
+    ]
