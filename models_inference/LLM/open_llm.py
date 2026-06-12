@@ -48,11 +48,7 @@ class LLM_Inference:
 
         def inference(self, prompt):
             # 1. Convert the list of dicts into a single formatted string for the model
-            formatted_prompt = self.tokenizer.apply_chat_template(
-                prompt,
-                tokenize=False,
-                add_generation_prompt=True
-            )
+            formatted_prompt = "\n\n".join([msg["content"] for msg in prompt]).strip()
             
             # 2. Tokenize the newly formatted string
             inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.llm_model.device)

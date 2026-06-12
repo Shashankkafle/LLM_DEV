@@ -3,6 +3,9 @@ from utils.prompt_builder import getPrompt
 from models_inference.LLM.open_llm import LLM_Inference
 from utils.phase_handler import PhaseHandler
 from configurations import INTERSECTION_CONFIG as conf
+from utils.metrics_recorder import MetricsRecorder
+import time
+import re
 import argparse
 
 
@@ -16,6 +19,16 @@ def parse_args():
 
     return parser.parse_args()
 
+def parse_llm_signal(raw_text):
+    """
+         extracts the requested signal using regex.
+    """
+    match = re.search(r"<signal>(.*?)</signal>", raw_text, re.IGNORECASE)
+    if match:
+            return match.group(1).strip().upper()
+    return None
+
+        
 
 def main(args):
     print("Starting main function...")
@@ -26,7 +39,7 @@ def main(args):
     llm.initialize_llm()
     # Initialize phase handler
     env.start_simulation()
-    intersection_states = {}
+    recorder = MetricsRecorder(run_name=args.test_name)
     intersection_phase_handlers = {}
     intersections = env.get_intersections()
     for intersection_id in intersections:
@@ -34,6 +47,7 @@ def main(args):
     for step in range(args.simulation_steps):
         print(f"Simulation step: {step}")
         env.step()
+        recorder.record_step_summary(step)
         for intersection_id, handler in intersection_phase_handlers.items():
             handler.step()
             print(f"Intersection {intersection_id} - Current Phase: {handler.current_phase}, Phase Type: {handler.current_phase_type}, Duration Remaining: {handler.duration}")
@@ -41,19 +55,29 @@ def main(args):
                 
                 state_data = env.get_state(intersection_id) 
                                 
-                #Build the prompt 
                 prompt = getPrompt(
                     state_dict=state_data,
 
                     phases=list(conf["phases"].keys())
                 )
-                
-                # Query the LLM for the next action 
+                # print(f"Generated prompt for intersection {intersection_id} at step {step}:\n{prompt}\n")
+                # exit()
+                start_time = time.time()
                 llm_output = llm.inference(prompt) 
+                latency_ms = (time.time() - start_time) * 1000
                 
                 # Parse the LLM output to get the next phase (and potentially duration)
                 print(f"LLM Output for intersection {intersection_id} at step {step}: {llm_output}")
-                next_phase = llm_output.strip()
+                extracted_signal = parse_llm_signal(llm_output)
+                next_phase = extracted_signal if extracted_signal else handler.current_phase
+
+                fallback_applied = False
+                if extracted_signal not in conf["phases"]:
+                    print(f"[Warning] Invalid phase '{extracted_signal}' at step {step}.")
+                    extracted_signal = handler.current_phase
+                    fallback_applied = True
+
+
                 # next_phase =  (list(conf["phases"].keys()))[step % len(conf["phases"].keys())]  # Placeholder for LLM output, cycling through phases for testing
                 
                 # Fallback mechanism if the LLM hallucinates an invalid phase
@@ -62,11 +86,20 @@ def main(args):
                     next_phase = handler.current_phase
 
 
-                # Apply the decision to the SUMO environment
                 
                 print(f"Activating phase {next_phase} for intersection {intersection_id}")
-                # Reset and update the phase handler
+
+                previous_phase = handler.current_phase
+
                 handler.activate_phase(next_phase)
+
+                recorder.record_decision(
+                    step=step, state_dict=state_data, prompt=prompt, 
+                    llm_output=llm_output, previous_phase=previous_phase, 
+                    final_phase=next_phase, fallback_applied=fallback_applied, 
+                    latency_ms=latency_ms,
+                    extracted_signal=extracted_signal
+                )
 
 
 
