@@ -77,8 +77,6 @@ class MetricsRecorder:
         with open(self.step_log_path, "a") as f:
             f.write(json.dumps(summary) + "\n")
 
-
-
     def record_decision(self, step, state_dict, prompt, llm_output, previous_phase, final_phase, fallback_applied, latency_ms,extracted_signal):
         """
         Records the full context of an LLM decision event.

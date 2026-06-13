@@ -12,11 +12,17 @@ class LLM_Inference:
         def initialize_llm(self):
             device_map = "auto"
             # init LLM
-            self.llm_model = AutoModelForCausalLM.from_pretrained(
-                self.llm_path,
-                torch_dtype=torch.bfloat16,
-                device_map=device_map,
-            )
+            if torch.cuda.is_available():
+                device = "cuda:0"
+                print(f"[Hardware Check] GPU detected! Using device: {device}")
+            else:
+                device = "cpu"
+                print("[Hardware Check] No GPU detected. Falling back to CPU (this will be slower).")
+                    
+                    # init LLM
+            self.llm_model = AutoModelForCausalLM.from_pretrained(self.llm_path,torch_dtype=torch.bfloat16,).to(device)
+
+            print(f"[Hardware Check] Model successfully loaded on: {self.llm_model.device}")
 
             self.llm_model.eval()
             # init tokenizer
