@@ -60,14 +60,12 @@ def main(args):
 
                     phases=list(conf["phases"].keys())
                 )
-                # print(f"Generated prompt for intersection {intersection_id} at step {step}:\n{prompt}\n")
-                # exit()
+
                 start_time = time.time()
                 llm_output = llm.inference(prompt) 
                 latency_ms = (time.time() - start_time) * 1000
                 
                 # Parse the LLM output to get the next phase (and potentially duration)
-                print(f"LLM Output for intersection {intersection_id} at step {step}: {llm_output}")
                 extracted_signal = parse_llm_signal(llm_output)
                 next_phase = extracted_signal if extracted_signal else handler.current_phase
 
@@ -84,10 +82,6 @@ def main(args):
                 if next_phase not in conf["phases"]:
                     print(f"[Warning] Invalid phase '{next_phase}' generated at step {step}. Defaulting to current phase.")
                     next_phase = handler.current_phase
-
-
-                
-                print(f"Activating phase {next_phase} for intersection {intersection_id}")
 
                 previous_phase = handler.current_phase
 

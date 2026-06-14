@@ -20,7 +20,6 @@ class PhaseHandler:
 
     
     def step(self):
-        print(f"PhaseHandler Step - Intersection: {self.intersection_id}, Current Phase: {self.current_phase}, Phase Type: {self.current_phase_type}, Duration Remaining: {self.duration}")
         # This method can be called at each simulation step to check if it's time to switch phases
         if self.current_phase_type == "ALL_RED":
             self.duration -= 1
@@ -43,7 +42,6 @@ class PhaseHandler:
                 self.switch_phase = True  
     
     def activate_phase(self, new_phase):
-        print("Activating phase:", new_phase, "for intersection:", self.intersection_id," with current phase:", self.current_phase, "and phase type:", self.current_phase_type)
         if not self.switch_phase:
             raise ValueError("Cannot switch phase yet. Current phase duration has not ended.")
         
@@ -54,7 +52,6 @@ class PhaseHandler:
             self.duration = self.conf["global_settings"]["default_green_duration"]  # Reset duration if the same phase is activated again
         
         if new_phase != self.current_phase:
-            print(f"Switching from phase {self.current_phase} to {new_phase}")
             self.env.set_phase(intersection_id=self.intersection_id, phase_config=self.conf["phases"][self.current_phase]["yellow"])
             self.current_phase_type = "YELLOW"
             self.next_phase = new_phase

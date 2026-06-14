@@ -63,6 +63,8 @@ class MetricsRecorder:
         att = (self.cumulative_travel_time / self.total_completed_vehicles) if self.total_completed_vehicles > 0 else 0
         awt = (self.cumulative_waiting_time / max(1, len(active_vehicles) + self.total_completed_vehicles))
 
+        print(f"cumulative_waiting_time: {self.cumulative_waiting_time}, total_vehicles_in_network: {len(active_vehicles)}, total_completed_vehicles: {self.total_completed_vehicles}, att: {att}, awt: {awt}")
+
         summary = {
             "step": step,
             "timestamp": time.time(),
