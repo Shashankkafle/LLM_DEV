@@ -43,8 +43,8 @@ INTERSECTION_CONFIG = {
             "yellow": "gggrrryyygggrrrrrrgggrrryyygggrrrrrr",
             "llm_description": "- NLSL: Northern and southern left-turn lanes."
         },
-        
-    "movement_directions": {
+    },
+     "movement_directions": {
         "NT": "North", "NL": "North",
         "ST": "South", "SL": "South",
         "ET": "East",  "EL": "East",
@@ -62,7 +62,6 @@ INTERSECTION_CONFIG = {
         "ET": "West",  "EL": "South",
         "WT": "East",  "WL": "North",
     },
-    }
 }
 
 
