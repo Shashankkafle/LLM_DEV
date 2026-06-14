@@ -1,6 +1,7 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+
 class LLM_Inference:
     def __init__(self, llm_path):
         self.llm_path = llm_path
@@ -9,7 +10,7 @@ class LLM_Inference:
         self.model_family = None
 
     def initialize_llm(self):
-        self.tokenizer = AutoTokenizer.from_pretrained(self.llm_path, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.llm_path, trust_remote_code=True)            
         self.model = AutoModelForCausalLM.from_pretrained(
             self.llm_path, 
             torch_dtype=torch.float16, 
@@ -31,13 +32,18 @@ class LLM_Inference:
 
     def _format_prompt(self, raw_user_content):
         system_prompt = "You are an expert in traffic management. You can use your knowledge of traffic commonsense to solve this traffic signal control tasks."
-        
+
         if self.model_family == "alpaca":
             return f"{system_prompt}\n\n### Instruction:\n{raw_user_content}\n\n### Response:\n"
-        
+
+        # Only reach here for chatml — guard against missing template
+        if not getattr(self.tokenizer, "chat_template", None):
+            print("[Warning] chatml family detected but no chat_template found. Falling back to Alpaca.")
+            return f"{system_prompt}\n\n### Instruction:\n{raw_user_content}\n\n### Response:\n"
+
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": raw_user_content}
+            {"role": "user",   "content": raw_user_content}
         ]
         return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
