@@ -68,52 +68,32 @@ def build_observation(state_dict: dict) -> str:
     return "\n\n".join(blocks)
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-SYSTEM_PROMPT = (
-    "You are an expert traffic signal control agent. "
-    "Traffic congestion is primarily dictated by early queued vehicles — "
-    "they have the most significant impact, so you must pay the most "
-    "attention to lanes with long queue lengths. "
-    "It is NOT urgent to consider vehicles in distant segments since they "
-    "are unlikely to reach the intersection soon."
-)
-
-
 def getPrompt(state_dict: dict) -> str:
     observation_text = build_observation(state_dict)
     
     user_content = (
-        "A crossroad connects two roads: the north-south and east-west. The traffic light is located at "
-        "the intersection of the two roads. The north-south road is divided into two sections by the intersection: "
-        "the north and south. Similarly, the east-west road is divided into the east and west. Each section "
-        "has two lanes: a through and a left-turn lane. Each lane is further divided into three segments. "
-        "Segment 1 is the closest to the intersection. Segment 2 is in the middle. Segment 3 is the farthest. "
-        "In a lane, there may be early queued vehicles and approaching vehicles traveling in different segments. "
-        "Early queued vehicles have arrived at the intersection and await passage permission. Approaching "
-        "vehicles will arrive at the intersection in the future.\n\n"
-        "The traffic light has 4 signal phases. Each signal relieves vehicles' flow in the group of two "
-        "specific lanes. The state of the intersection is listed below. It describes:\n"
-        "- The group of lanes relieving vehicles' flow under each traffic light phase.\n"
-        "- The number of early queued vehicles of the allowed lanes of each signal.\n"
-        "- The number of approaching vehicles in different segments of the allowed lanes of each signal.\n\n"
+        "A traffic light regulates a four-section intersection with northern, southern, eastern, and western "
+                    "sections, each containing two lanes: one for through traffic and one for left-turns. Each lane is "
+                    "further divided into three segments. Segment 1 is the closest to the intersection. Segment 2 is in the "
+                    "middle. Segment 3 is the farthest. In a lane, there may be early queued vehicles and approaching "
+                    "vehicles traveling in different segments. Early queued vehicles have arrived at the intersection and "
+                    "await passage permission. Approaching vehicles will arrive at the intersection in the future.\n\n"
+                    "The traffic light has 4 signal phases. Each signal relieves vehicles' flow in the group of two "
+                    "specific lanes. The state of the intersection is listed below. It describes:\n"
+                    "- The group of lanes relieving vehicles' flow under each signal phase.\n"
+                    "- The number of early queued vehicles of the allowed lanes of each signal.\n"
+                    "- The number of approaching vehicles in different segments of the allowed lanes of each signal.\n\n"
         f"{observation_text}\n"
         "Please answer:\n"
-        "Which is the most effective traffic signal that will most significantly improve the traffic "
-        "condition during the next phase, which relieves vehicles' flow of the allowed lanes of the signal?\n\n"
-        "Note:\n"
-        "The traffic congestion is primarily dictated by the early queued vehicles, with the MOST significant "
-        "impact. You MUST pay the MOST attention to lanes with long queue lengths. It is NOT URGENT to "
-        "consider vehicles in distant segments since they are unlikely to reach the intersection soon.\n\n"
-        "Requirements:\n"
-        "- Let's think step by step.\n"
-        "- You can only choose one of the signals listed above.\n"
-        "- You must follow the following steps to provide your analysis: Step 1: Provide your analysis "
-        "for identifying the optimal traffic signal. Step 2: Answer your chosen signal.\n"
-        "- Your choice can only be given after finishing the analysis.\n"
-        "- Your choice must be identified by the tag: <signal>YOUR_CHOICE</signal>."
+                    "Which is the most effective traffic signal that will most significantly improve the traffic "
+                    "condition during the next phase?\n\n"
+                    "Requirements:\n"
+                    "- Let's think step by step.\n"
+                    "- You can only choose one of the signals listed above.\n"
+                    "- You must follow the following steps to provide your analysis: Step 1: Provide your analysis "
+                    "for identifying the optimal traffic signal. Step 2: Answer your chosen signal.\n"
+                    "- Your choice can only be given after finishing the analysis.\n"
+                    "- Your choice must be identified by the tag: <signal>YOUR_CHOICE</signal>."
     )
     
     return user_content
