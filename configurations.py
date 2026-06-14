@@ -42,7 +42,26 @@ INTERSECTION_CONFIG = {
             "green": "gggrrrGGGgggrrrrrrgggrrrGGGgggrrrrrr",
             "yellow": "gggrrryyygggrrrrrrgggrrryyygggrrrrrr",
             "llm_description": "- NLSL: Northern and southern left-turn lanes."
-        }
+        },
+        
+    "movement_directions": {
+        "NT": "North", "NL": "North",
+        "ST": "South", "SL": "South",
+        "ET": "East",  "EL": "East",
+        "WT": "West",  "WL": "West",
+    },
+
+    "movement_types": {
+        "NT": "through", "ST": "through", "ET": "through", "WT": "through",
+        "NL": "left-turn", "SL": "left-turn", "EL": "left-turn", "WL": "left-turn",
+    },
+
+    "movement_outgoing_road": {
+        "NT": "South", "NL": "East",
+        "ST": "North", "SL": "West",
+        "ET": "West",  "EL": "South",
+        "WT": "East",  "WL": "North",
+    },
     }
 }
 
