@@ -94,8 +94,7 @@ class MetricsRecorder:
             "event_type": "phase_decision",
             "traffic_state": state_dict.get("movement_states", {}),
             "llm_input": {
-                "system_prompt": prompt[0]["content"] if len(prompt) > 0 else "",
-                "user_prompt": prompt[1]["content"] if len(prompt) > 1 else ""
+                "user_prompt": prompt
             },
             "llm_output": {
                 "raw_text": llm_output,

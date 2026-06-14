@@ -1,73 +1,62 @@
-import os
-
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# only for inference, no training, so no need to set up optimizer, scheduler, etc. for LLM
 class LLM_Inference:
-        def __init__(self,llm_path,max_new_tokens=512):
-                self.llm_path = os.path.abspath(llm_path)
-                self.max_new_tokens = max_new_tokens
+    def __init__(self, llm_path):
+        self.llm_path = llm_path
+        self.model = None
+        self.tokenizer = None
+        self.model_family = None
 
-        def initialize_llm(self):
-            device_map = "auto"
-            # init LLM
-            if torch.cuda.is_available():
-                device = "cuda:0"
-                print(f"[Hardware Check] GPU detected! Using device: {device}")
-            else:
-                device = "cpu"
-                print("[Hardware Check] No GPU detected. Falling back to CPU (this will be slower).")
-                    
-                    # init LLM
-            self.llm_model = AutoModelForCausalLM.from_pretrained(self.llm_path,torch_dtype=torch.bfloat16,).to(device)
+    def initialize_llm(self):
+        self.tokenizer = AutoTokenizer.from_pretrained(self.llm_path, trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.llm_path, 
+            torch_dtype=torch.float16, 
+            device_map="auto", 
+            trust_remote_code=True
+        )
+        self.model_family = self._detect_model_family()
+        print(f"[Info] Auto-detected model family: {self.model_family}")
 
-            print(f"[Hardware Check] Model successfully loaded on: {self.llm_model.device}")
+    def _detect_model_family(self):
+        model_type = getattr(self.model.config, "model_type", "").lower()
+        chat_template = getattr(self.tokenizer, "chat_template", "") or ""
+        
+        if "qwen" in model_type or "<|im_start|>" in chat_template:
+            return "chatml"
+        if "alpaca" in self.llm_path.lower():
+            return "alpaca"
+        return "chatml"
 
-            self.llm_model.eval()
-            # init tokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.llm_path,
-                padding_side="left",
-                padding=True
+    def _format_prompt(self, raw_user_content):
+        system_prompt = "You are an expert in traffic management. You can use your knowledge of traffic commonsense to solve this traffic signal control tasks."
+        
+        if self.model_family == "alpaca":
+            return f"{system_prompt}\n\n### Instruction:\n{raw_user_content}\n\n### Response:\n"
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": raw_user_content}
+        ]
+        return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+    def inference(self, raw_prompt):
+        formatted_prompt = self._format_prompt(raw_prompt)
+        inputs = self.tokenizer([formatted_prompt], return_tensors="pt").to(self.model.device)
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=1024,
+                temperature=0.0,
+                do_sample=False
             )
 
-            self.tokenizer.pad_token_id = 0
-            self.test_generation_kwargs = {
-                "min_length": -1,
-                "top_k": 50,
-                "top_p": 1.0,
-                "temperature": 0.1,
-                "do_sample": True,
-                "max_new_tokens": self.max_new_tokens,
-                "pad_token_id": self.tokenizer.pad_token_id,
-                "eos_token_id": self.tokenizer.eos_token_id
-            }
-
-        # def inference(self, prompt):
-        #     inputs = self.tokenizer(prompt, return_tensors="pt").to(self.llm_model.device)
-        #     with torch.no_grad():
-        #         outputs = self.llm_model.generate(**inputs, **self.test_generation_kwargs)
-        #     response = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-        #     return response
-
-
-        def inference(self, prompt):
-            # 1. Convert the list of dicts into a single formatted string for the model
-            formatted_prompt = "\n\n".join([msg["content"] for msg in prompt]).strip()
-            
-            # 2. Tokenize the newly formatted string
-            inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.llm_model.device)
-            
-            # 3. Generate the output
-            with torch.no_grad():
-                outputs = self.llm_model.generate(**inputs, **self.test_generation_kwargs)
-                
-            # 4. Slice the output to exclude the prompt
-            input_length = inputs.input_ids.shape[1]
-            generated_tokens = outputs[0, input_length:]  # [0] = first (only) batch item
-
-            # 5. Decode
-            response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
-            
-            return response
+        print("outputs:", outputs)
+        
+        # CORRECTED SLICING HERE
+        input_length = inputs.input_ids.shape[1]
+        generated_tokens = outputs[0, input_length:]
+        print("self.tokenizer.decode(generated_tokens, skip_special_tokens=True", self.tokenizer.decode(generated_tokens, skip_special_tokens=True))
+        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)

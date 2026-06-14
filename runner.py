@@ -55,12 +55,10 @@ def main(args):
                 
                 state_data = env.get_state(intersection_id) 
                                 
-                prompt = getPrompt(
-                    state_dict=state_data,
+                prompt = getPrompt(state_dict=state_data)
 
-                    phases=list(conf["phases"].keys())
-                )
 
+                print(f"Generated prompt for LLM:\n{prompt}\n")
                 start_time = time.time()
                 llm_output = llm.inference(prompt) 
                 latency_ms = (time.time() - start_time) * 1000
