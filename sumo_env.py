@@ -1,14 +1,55 @@
 import traci
 from configurations import INTERSECTION_CONFIG 
+approaches = ["North", "South", "East", "West"]
+movement_to_approach = {
+    "ETWT": ["East", "West"],
+    "ELWL": ["East", "West"],
+    "NTST": ["South", "North"],
+    "NLSL": ["South", "North"]
+}
 class SumoEnv:
     def __init__(self, sumo_config, use_gui=False):
         self.sumo_config = sumo_config
         self.use_gui = use_gui
+        self.approach_mapping = None
         if self.use_gui:
             sumo_binary = "sumo-gui"
         else:
             sumo_binary = "sumo"
         self.cmd = [sumo_binary, "-c", self.sumo_config]
+
+    def _build_approach_mapping(self):
+        mapping = {j: {} for j in traci.trafficlight.getIDList()}
+
+        for lane_id in traci.lane.getIDList():
+            if lane_id.startswith(":"):
+                continue
+                
+            target_junctions = set()
+            for link in traci.lane.getLinks(lane_id):
+                internal_lanes = link
+                for internal_lane in internal_lanes:
+                    if isinstance(internal_lane, str) and internal_lane.startswith(":"):
+                        for j_id in mapping:
+                            if internal_lane.startswith(f":{j_id}_"):
+                                target_junctions.add(j_id)
+                        
+            if target_junctions:
+                shape = traci.lane.getShape(lane_id)
+                start_point = shape[0]
+                end_point = shape[-1]
+                dx = start_point[0] - end_point[0]
+                dy = end_point[1] - start_point[1]
+
+                if abs(dx) > abs(dy):
+                    approach = "East" if dx > 0 else "West"
+                else:
+                    approach = "South" if dy > 0 else "North"
+                    
+                for j_id in target_junctions:
+                    mapping[j_id][lane_id] = approach
+
+        return mapping
 
     def _build_movement_lane_map(self, intersection_id):
         """
@@ -50,6 +91,9 @@ class SumoEnv:
         intersection_id: self._build_movement_lane_map(intersection_id)
         for intersection_id in self.intersection_ids
         }
+        self.approach_mapping = self._build_approach_mapping()
+        print("Initialized SumoEnv with the following approach mapping:", self.approach_mapping)
+
         print("Initialized SumoEnv with the following movement-lane mapping:", self.movement_lane_map)
 
     
@@ -113,24 +157,34 @@ class SumoEnv:
 
         state["lane_states"] = lane_data
 
+        print(f"Lane-level data for intersection {intersection_id}:", lane_data)
+
         # --- Movement-grouped counts (aggregated over the movement's lanes) ---
+
         for movement_name, lane_ids in self.movement_lane_map[intersection_id].items():
-            agg = {
-                "early_queued": 0,
-                "segments": {"segment_1": 0, "segment_2": 0, "segment_3": 0},
-                "lanes": {}   # per-lane breakdown kept for debugging
-            }
+            agg = {}
+            print(f"\nProcessing movement {movement_name} with lanes {lane_ids}")
+            for approach in movement_to_approach[movement_name]:
+                agg[approach] = {
+                    "early_queued": 0,
+                    "segments": {"segment_1": 0, "segment_2": 0, "segment_3": 0},
+                    "lanes": {}   # per-lane breakdown kept for debugging
+                }
 
             for lane_id in lane_ids:
                 if lane_id not in lane_data:
                     continue  
-
+                
                 d = lane_data[lane_id]
-                agg["early_queued"]          += d["early_queued"]
-                agg["segments"]["segment_1"] += d["segments"]["segment_1"]
-                agg["segments"]["segment_2"] += d["segments"]["segment_2"]
-                agg["segments"]["segment_3"] += d["segments"]["segment_3"]
-                agg["lanes"][lane_id]         = d   
+                lane_approach = self.approach_mapping[intersection_id].get(lane_id, "Unknown")
+                if lane_approach == "Unknown":
+                    raise ValueError(f"Lane {lane_id} in movement {movement_name} does not have a known approach direction in the mapping.")
+                
+                agg[lane_approach]["early_queued"]          += d["early_queued"]
+                agg[lane_approach]["segments"]["segment_1"] += d["segments"]["segment_1"]
+                agg[lane_approach]["segments"]["segment_2"] += d["segments"]["segment_2"]
+                agg[lane_approach]["segments"]["segment_3"] += d["segments"]["segment_3"]
+                agg[lane_approach]["lanes"][lane_id]         = d   
             state["movement_states"][movement_name] = agg
 
         return state

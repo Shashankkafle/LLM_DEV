@@ -8,69 +8,64 @@ from configurations import INTERSECTION_CONFIG
 _MOVEMENT_DIRECTION = INTERSECTION_CONFIG["movement_directions"]
 _MOVEMENT_TYPE      = INTERSECTION_CONFIG["movement_types"]
 
-def _phase_observation_block(phase_name: str, movement_states: dict) -> str:
-    """
-    Builds the observation block for one signal phase exactly as the 
-    original LLMLight Commonsense implementation does.
-    """
+# def _phase_observation_block(phase_name: str, movement_states: dict) -> str:
+#     """
+#     Builds the observation block for one signal phase exactly as the 
+#     original LLMLight Commonsense implementation does.
+#     """
 
-    # Extract movement codes
-    mov_a = phase_name[:2]   # e.g. "NT"
-    mov_b = phase_name[2:]   # e.g. "ST"
 
-    dir_a = _MOVEMENT_DIRECTION[mov_a]   # e.g. "North"
-    dir_b = _MOVEMENT_DIRECTION[mov_b]   # e.g. "South"
-
-    # Fetch aggregated data from movement_states.
-    def _get(mov):
-        return movement_states.get(mov, {
-            "early_queued": 0,
-            "segments": {"segment_1": 0, "segment_2": 0, "segment_3": 0}
-        })
-
-    data_a = _get(mov_a)
-    data_b = _get(mov_b)
-
-    # Cast to int to guarantee exact matching
-    eq_a  = int(data_a["early_queued"])
-    eq_b  = int(data_b["early_queued"])
-    eq_tot = eq_a + eq_b
-
-    segs_a = data_a["segments"]
-    segs_b = data_b["segments"]
-
-    s1_a, s1_b = int(segs_a.get("segment_1", 0)), int(segs_b.get("segment_1", 0))
-    s2_a, s2_b = int(segs_a.get("segment_2", 0)), int(segs_b.get("segment_2", 0))
-    s3_a, s3_b = int(segs_a.get("segment_3", 0)), int(segs_b.get("segment_3", 0))
-
-    # Slice [8:-1] exactly as the original authors did to format the 'Allowed lanes' string
-    # E.g., "- NTST: Northern and southern through lanes." -> "Northern and southern through lanes"
-    allowed_desc = INTERSECTION_CONFIG["phases"][phase_name]["llm_description"][8:-1]
-
-    # Note: Pay strict attention to the single spaces after colons here. Do not add tabs.
-    block = (f"Signal: {phase_name}\n"
-             f"Allowed lanes: {allowed_desc}\n"
-             f"- Early queued: {eq_a} ({dir_a}), {eq_b} ({dir_b}), {eq_tot} (Total)\n"
-             f"- Segment 1: {s1_a} ({dir_a}), {s1_b} ({dir_b}), {s1_a + s1_b} (Total)\n"
-             f"- Segment 2: {s2_a} ({dir_a}), {s2_b} ({dir_b}), {s2_a + s2_b} (Total)\n"
-             f"- Segment 3: {s3_a} ({dir_a}), {s3_b} ({dir_b}), {s3_a + s3_b} (Total)")
+#     # Note: Pay strict attention to the single spaces after colons here. Do not add tabs.
+#     block = (f"Signal: {phase_name}\n"
+#              f"- Early queued: {movement_states[phase_name]['early_queued']} ({dir_a}), {eq_b} ({dir_b}), {eq_tot} (Total)\n"
+#              f"- Segment 1: {s1_a} ({dir_a}), {s1_b} ({dir_b}), {s1_a + s1_b} (Total)\n"
+#              f"- Segment 2: {s2_a} ({dir_a}), {s2_b} ({dir_b}), {s2_a + s2_b} (Total)\n"
+#              f"- Segment 3: {s3_a} ({dir_a}), {s3_b} ({dir_b}), {s3_a + s3_b} (Total)")
     
-    return block
+#     return block
 def build_observation(state_dict: dict) -> str:
     """
     Assembles the full observation section for all phases, separated by
     blank lines — ready to be dropped into the user prompt.
     """
-    movement_states = state_dict.get("movement_states", {})
-    blocks = []
-    for phase_name in INTERSECTION_CONFIG["phases"]:
-        blocks.append(_phase_observation_block(phase_name, movement_states))
+    movement_states = state_dict.get("movement_states")
+    print(f"Building observation with movement states: {movement_states}")
+
+
+    ETWT_block = (f"Signal: ETWT\n"
+             f"- Early queued: {movement_states['ETWT']['East']['early_queued']} (East), {movement_states['ETWT']['West']['early_queued']} (West), {movement_states['ETWT']['West']['early_queued']+movement_states['ETWT']['East']['early_queued']} (Total)\n"
+             f"- Segment 1: {movement_states['ETWT']['East']['segments']['segment_1']} ('East'), {movement_states['ETWT']['West']['segments']['segment_1']} ('West'), {movement_states['ETWT']['East']['segments']['segment_1'] + movement_states['ETWT']['West']['segments']['segment_1']} (Total)\n"
+             f"- Segment 2: {movement_states['ETWT']['East']['segments']['segment_2']} ('East'), {movement_states['ETWT']['West']['segments']['segment_2']} ('West'), {movement_states['ETWT']['East']['segments']['segment_2'] + movement_states['ETWT']['West']['segments']['segment_2']} (Total)\n"
+             f"- Segment 3: {movement_states['ETWT']['East']['segments']['segment_3']} ('East'), {movement_states['ETWT']['West']['segments']['segment_3']} ('West'), {movement_states['ETWT']['East']['segments']['segment_3'] + movement_states['ETWT']['West']['segments']['segment_3']} (Total)")
+    
+
+    ELWL_block = (f"Signal: ELWL\n"
+             f"- Early queued: {movement_states['ELWL']['East']['early_queued']} (East), {movement_states['ELWL']['West']['early_queued']} (West), {movement_states['ELWL']['West']['early_queued']+movement_states['ELWL']['East']['early_queued']} (Total)\n"
+             f"- Segment 1: {movement_states['ELWL']['East']['segments']['segment_1']} ('East'), {movement_states['ELWL']['West']['segments']['segment_1']} ('West'), {movement_states['ELWL']['East']['segments']['segment_1'] + movement_states['ELWL']['West']['segments']['segment_1']} (Total)\n"
+             f"- Segment 2: {movement_states['ELWL']['East']['segments']['segment_2']} ('East'), {movement_states['ELWL']['West']['segments']['segment_2']} ('West'), {movement_states['ELWL']['East']['segments']['segment_2'] + movement_states['ELWL']['West']['segments']['segment_2']} (Total)\n"
+             f"- Segment 3: {movement_states['ELWL']['East']['segments']['segment_3']} ('East'), {movement_states['ELWL']['West']['segments']['segment_3']} ('West'), {movement_states['ELWL']['East']['segments']['segment_3'] + movement_states['ELWL']['West']['segments']['segment_3']} (Total)")
+    
+    NTST_block = (f"Signal: NTST\n"
+             f"- Early queued: {movement_states['NTST']['North']['early_queued']} (North), {movement_states['NTST']['South']['early_queued']} (South), {movement_states['NTST']['South']['early_queued']+movement_states['NTST']['North']['early_queued']} (Total)\n"
+             f"- Segment 1: {movement_states['NTST']['North']['segments']['segment_1']} ('North'), {movement_states['NTST']['South']['segments']['segment_1']} ('South'), {movement_states['NTST']['North']['segments']['segment_1'] + movement_states['NTST']['South']['segments']['segment_1']} (Total)\n"
+             f"- Segment 2: {movement_states['NTST']['North']['segments']['segment_2']} ('North'), {movement_states['NTST']['South']['segments']['segment_2']} ('South'), {movement_states['NTST']['North']['segments']['segment_2'] + movement_states['NTST']['South']['segments']['segment_2']} (Total)\n"
+             f"- Segment 3: {movement_states['NTST']['North']['segments']['segment_3']} ('North'), {movement_states['NTST']['South']['segments']['segment_3']} ('South'), {movement_states['NTST']['North']['segments']['segment_3'] + movement_states['NTST']['South']['segments']['segment_3']} (Total)")
+    NLSL_block = (f"Signal: NLSL\n"
+             f"- Early queued: {movement_states['NLSL']['North']['early_queued']} (North), {movement_states['NLSL']['South']['early_queued']} (South), {movement_states['NLSL']['South']['early_queued']+movement_states['NLSL']['North']['early_queued']} (Total)\n"
+             f"- Segment 1: {movement_states['NLSL']['North']['segments']['segment_1']} ('North'), {movement_states['NLSL']['South']['segments']['segment_1']} ('South'), {movement_states['NLSL']['North']['segments']['segment_1'] + movement_states['NLSL']['South']['segments']['segment_1']} (Total)\n"
+             f"- Segment 2: {movement_states['NLSL']['North']['segments']['segment_2']} ('North'), {movement_states['NLSL']['South']['segments']['segment_2']} ('South'), {movement_states['NLSL']['North']['segments']['segment_2'] + movement_states['NLSL']['South']['segments']['segment_2']} (Total)\n"
+             f"- Segment 3: {movement_states['NLSL']['North']['segments']['segment_3']} ('North'), {movement_states['NLSL']['South']['segments']['segment_3']} ('South'), {movement_states['NLSL']['North']['segments']['segment_3'] + movement_states['NLSL']['South']['segments']['segment_3']} (Total)")
+    
+
+    blocks = [ETWT_block, ELWL_block, NTST_block, NLSL_block]
+    # for phase_name in INTERSECTION_CONFIG["phases"]:
+    #     blocks.append(_phase_observation_block(phase_name, movement_states))
     return "\n\n".join(blocks)
 
 
 def getPrompt(state_dict: dict) -> str:
     observation_text = build_observation(state_dict)
-    
+    print(f"Built observation text:\n{observation_text}\n")
     user_content = (
         "A traffic light regulates a four-section intersection with northern, southern, eastern, and western "
                     "sections, each containing two lanes: one for through traffic and one for left-turns. Each lane is "
