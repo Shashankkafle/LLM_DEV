@@ -93,7 +93,8 @@ def main(args):
                     extracted_signal=extracted_signal
                 )
 
-
+    env.close()
+    recorder.save_final_summary()
 
         
 
