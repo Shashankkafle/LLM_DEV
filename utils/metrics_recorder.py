@@ -1,5 +1,6 @@
 import json
 import time
+from configurations import MIN_SPEED
 import traci
 from pathlib import Path
 from datetime import datetime
@@ -15,74 +16,44 @@ class MetricsRecorder:
 
         self.decision_log_path = self.run_dir / "decisions.jsonl"
         self.step_log_path = self.run_dir / "step_summaries.jsonl"
-
-        # Per-vehicle tracking: vid -> depart_time
-        self.vehicle_entry_time = {}
-
-        # Completed vehicle accumulators
-        self.total_completed_vehicles = 0
-        self.cumulative_travel_time = 0.0
-        self.cumulative_accumulated_wait = 0.0  # sum of getAccumulatedWaitingTime at arrival
-
-        # AQL tracking (averaged across steps)
-        self.step_aql_sum = 0.0
-        self.step_count = 0
-
-        # Decision tracking
-        self.total_hallucinations = 0
+        self.vehicle_data = {}
+        self.queue_lengths = []
         self.total_decisions = 0
+        self.total_hallucinations = 0
 
+
+
+    def get_summary_from_vehicle_data(self):
+        total_travel_time = sum(v["travel_time"] for v in self.vehicle_data.values())
+        total_waiting_time = sum(v["waiting_time"] for v in self.vehicle_data.values())
+        total_vehicles = len(self.vehicle_data)
+
+        return {
+            "total_completed_vehicles": total_vehicles,
+            "average_travel_time_s": round(total_travel_time / total_vehicles, 2) if total_vehicles > 0 else None,
+            "average_waiting_time_s": round(total_waiting_time / total_vehicles, 2) if total_vehicles > 0 else None,
+        }
+    
     def record_step_summary(self, step):
         current_time = traci.simulation.getTime()
-
-        # 1. Register newly departed vehicles
-        for vid in traci.simulation.getDepartedIDList():
-            self.vehicle_entry_time[vid] = current_time
-
-        # 2. Capture metrics for vehicles that just arrived (BEFORE they leave TraCI)
-        for vid in traci.simulation.getArrivedIDList():
-            if vid in self.vehicle_entry_time:
-                travel_time = current_time - self.vehicle_entry_time.pop(vid)
-                # getAccumulatedWaitingTime is still valid for this step (vehicle arrived, not yet purged)
-                try:
-                    acc_wait = traci.vehicle.getAccumulatedWaitingTime(vid)
-                except traci.exceptions.TraCIException:
-                    acc_wait = 0.0  # fallback if already purged
-                self.cumulative_travel_time += travel_time
-                self.cumulative_accumulated_wait += acc_wait
-                self.total_completed_vehicles += 1
-
-        # 3. AQL: halting vehicles across all edges (excluding internal junction edges)
-        road_edges = [e for e in traci.edge.getIDList() if not e.startswith(":")]
-        halting_vehicles = sum(
-            traci.edge.getLastStepHaltingNumber(e) for e in road_edges
-        )
-        self.step_aql_sum += halting_vehicles
-        self.step_count += 1
-
-        # 4. Compute safe averages
-        n = self.total_completed_vehicles
-        att = (self.cumulative_travel_time / n) if n > 0 else 0.0
-        awt = (self.cumulative_accumulated_wait / n) if n > 0 else 0.0
-        aql = halting_vehicles  # current-step value; use step_aql_sum/step_count for episode average
-
-        if self.verbose:
-            print(
-                f"[Step {step}] ATT={att:.1f}s | AWT={awt:.1f}s | "
-                f"AQL={aql} | Completed={n} | Active={len(traci.vehicle.getIDList())}"
-            )
-
-        summary = {
-            "step": step,
-            "timestamp": time.time(),
-            "event_type": "step_summary",
-            "aggregate_queue_length": aql,
-            "total_vehicles_in_network": len(traci.vehicle.getIDList()),
-            "completed_vehicles": n,
-            "average_travel_time": round(att, 2),
-            "average_waiting_time": round(awt, 2),
-        }
-
+        current_queue_length = 0
+        for vehicle in traci.vehicle.getIDList():
+            depart_time = traci.vehicle.getDeparture(vehicle)
+            if depart_time is not None:
+                travel_time = current_time - depart_time
+                waiting_time = traci.vehicle.getAccumulatedWaitingTime(vehicle)
+                self.vehicle_data[vehicle] = {
+                    "travel_time": travel_time,
+                    "waiting_time": waiting_time,
+                }
+            
+            if traci.vehicle.getSpeed(vehicle) < MIN_SPEED: 
+                current_queue_length += 1 
+        
+        self.queue_lengths.append(current_queue_length)
+        summary = self.get_summary_from_vehicle_data()
+        summary["queue_length"] = current_queue_length 
+        summary["step"] = step
         with open(self.step_log_path, "a") as f:
             f.write(json.dumps(summary) + "\n")
 
@@ -91,12 +62,13 @@ class MetricsRecorder:
         Returns overall episode-level metrics after the simulation ends.
         Call this once after the simulation loop exits.
         """
-        n = self.total_completed_vehicles
+        arrived_vehicles = traci.simulation.getArrivedNumber()
+        total_vehicles = len(self.vehicle_data)
         return {
-            "total_completed_vehicles": n,
-            "average_travel_time_s": round(self.cumulative_travel_time / n, 2) if n > 0 else None,
-            "average_waiting_time_s": round(self.cumulative_accumulated_wait / n, 2) if n > 0 else None,
-            "average_queue_length": round(self.step_aql_sum / self.step_count, 2) if self.step_count > 0 else None,
+            "total_completed_vehicles": arrived_vehicles,
+            "average_travel_time_s": round(self.cumulative_travel_time / total_vehicles, 2) if total_vehicles > 0 else None,
+            "average_waiting_time_s": round(sum(v["waiting_time"] for v in self.vehicle_data.values()) / total_vehicles, 2) if total_vehicles > 0 else None,
+            "average_queue_length": round(sum(self.queue_lengths) / len(self.queue_lengths), 2) if self.queue_lengths else None,
             "total_decisions": self.total_decisions,
             "total_hallucinations": self.total_hallucinations,
             "hallucination_rate": round(self.total_hallucinations / self.total_decisions, 4) if self.total_decisions > 0 else None,
@@ -118,7 +90,7 @@ class MetricsRecorder:
                         previous_phase, final_phase, fallback_applied,
                         latency_ms, extracted_signal):
         self.total_decisions += 1
-        if fallback_applied or extracted_signal not in ["NTST", "ETWT", "NLSL", "ELWL"]:
+        if  extracted_signal not in ["NTST", "ETWT", "NLSL", "ELWL"] and extracted_signal != None:
             self.total_hallucinations += 1
 
         decision_event = {
