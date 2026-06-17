@@ -64,7 +64,7 @@ INTERSECTION_CONFIG = {
     },
 }
 
-
+MIN_SPEED = 0.1 
 
 
 # configurations.py
