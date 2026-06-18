@@ -29,8 +29,6 @@ def build_observation(state_dict: dict) -> str:
     blank lines — ready to be dropped into the user prompt.
     """
     movement_states = state_dict.get("movement_states")
-    print(f"Building observation with movement states: {movement_states}")
-
 
     ETWT_block = (f"Signal: ETWT\n"
              f"- Early queued: {movement_states['ETWT']['East']['early_queued']} (East), {movement_states['ETWT']['West']['early_queued']} (West), {movement_states['ETWT']['West']['early_queued']+movement_states['ETWT']['East']['early_queued']} (Total)\n"
@@ -65,7 +63,6 @@ def build_observation(state_dict: dict) -> str:
 
 def getPrompt(state_dict: dict) -> str:
     observation_text = build_observation(state_dict)
-    print(f"Built observation text:\n{observation_text}\n")
     user_content = (
         "A traffic light regulates a four-section intersection with northern, southern, eastern, and western "
                     "sections, each containing two lanes: one for through traffic and one for left-turns. Each lane is "

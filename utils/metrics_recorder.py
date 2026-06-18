@@ -27,7 +27,6 @@ class MetricsRecorder:
         total_travel_time = sum(v["travel_time"] for v in self.vehicle_data.values())
         total_waiting_time = sum(v["waiting_time"] for v in self.vehicle_data.values())
         total_vehicles = len(self.vehicle_data)
-
         return {
             "total_completed_vehicles": total_vehicles,
             "average_travel_time_s": round(total_travel_time / total_vehicles, 2) if total_vehicles > 0 else None,
@@ -66,7 +65,7 @@ class MetricsRecorder:
         total_vehicles = len(self.vehicle_data)
         return {
             "total_completed_vehicles": arrived_vehicles,
-            "average_travel_time_s": round(self.cumulative_travel_time / total_vehicles, 2) if total_vehicles > 0 else None,
+            "average_travel_time_s": round(sum(v["travel_time"] for v in self.vehicle_data.values()) / total_vehicles, 2) if total_vehicles > 0 else None,
             "average_waiting_time_s": round(sum(v["waiting_time"] for v in self.vehicle_data.values()) / total_vehicles, 2) if total_vehicles > 0 else None,
             "average_queue_length": round(sum(self.queue_lengths) / len(self.queue_lengths), 2) if self.queue_lengths else None,
             "total_decisions": self.total_decisions,

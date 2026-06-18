@@ -50,17 +50,15 @@ def main(args):
         recorder.record_step_summary(step)
         for intersection_id, handler in intersection_phase_handlers.items():
             handler.step()
-            print(f"Intersection {intersection_id} - Current Phase: {handler.current_phase}, Phase Type: {handler.current_phase_type}, Duration Remaining: {handler.duration}")
             if handler.switch_phase:
                 
                 state_data = env.get_state(intersection_id) 
                                 
                 prompt = getPrompt(state_dict=state_data)
 
-
-                print(f"Generated prompt for LLM:\n{prompt}\n")
                 start_time = time.time()
                 llm_output = llm.inference(prompt) 
+                # llm_output = "<signal>NTST</signal>"  # Placeholder for LLM output, replace with actual inference call
                 latency_ms = (time.time() - start_time) * 1000
                 
                 # Parse the LLM output to get the next phase (and potentially duration)
@@ -90,11 +88,13 @@ def main(args):
                     llm_output=llm_output, previous_phase=previous_phase, 
                     final_phase=next_phase, fallback_applied=fallback_applied, 
                     latency_ms=latency_ms,
-                    extracted_signal=extracted_signal
+                    extracted_signal=extracted_signal,
+                    intersection_id=intersection_id
                 )
 
-    env.close()
     recorder.save_final_summary()
+    env.close()
+    
 
         
 

@@ -157,13 +157,11 @@ class SumoEnv:
 
         state["lane_states"] = lane_data
 
-        print(f"Lane-level data for intersection {intersection_id}:", lane_data)
 
         # --- Movement-grouped counts (aggregated over the movement's lanes) ---
 
         for movement_name, lane_ids in self.movement_lane_map[intersection_id].items():
             agg = {}
-            print(f"\nProcessing movement {movement_name} with lanes {lane_ids}")
             for approach in movement_to_approach[movement_name]:
                 agg[approach] = {
                     "early_queued": 0,

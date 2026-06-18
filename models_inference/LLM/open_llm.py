@@ -59,10 +59,8 @@ class LLM_Inference:
                 do_sample=False
             )
 
-        print("outputs:", outputs)
         
         # CORRECTED SLICING HERE
         input_length = inputs.input_ids.shape[1]
         generated_tokens = outputs[0, input_length:]
-        print("self.tokenizer.decode(generated_tokens, skip_special_tokens=True", self.tokenizer.decode(generated_tokens, skip_special_tokens=True))
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
