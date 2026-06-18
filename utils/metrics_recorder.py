@@ -14,9 +14,9 @@ class MetricsRecorder:
         self.run_dir = Path(base_log_dir) / f"{run_name}_{timestamp}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
-        self.decision_log_path = self.run_dir / "decisions.jsonl"
         self.step_log_path = self.run_dir / "step_summaries.jsonl"
         self.vehicle_data = {}
+        self._departure_times = {}
         self.queue_lengths = []
         self.total_decisions = 0
         self.total_hallucinations = 0
@@ -37,7 +37,10 @@ class MetricsRecorder:
         current_time = traci.simulation.getTime()
         current_queue_length = 0
         for vehicle in traci.vehicle.getIDList():
-            depart_time = traci.vehicle.getDeparture(vehicle)
+            
+            if vehicle not in self._departure_times:
+                self._departure_times[vehicle] = current_time
+            depart_time = self._departure_times[vehicle]        
             if depart_time is not None:
                 travel_time = current_time - depart_time
                 waiting_time = traci.vehicle.getAccumulatedWaitingTime(vehicle)
@@ -87,7 +90,7 @@ class MetricsRecorder:
 
     def record_decision(self, step, state_dict, prompt, llm_output,
                         previous_phase, final_phase, fallback_applied,
-                        latency_ms, extracted_signal):
+                        latency_ms, extracted_signal, intersection_id):
         self.total_decisions += 1
         if  extracted_signal not in ["NTST", "ETWT", "NLSL", "ELWL"] and extracted_signal != None:
             self.total_hallucinations += 1
@@ -118,7 +121,9 @@ class MetricsRecorder:
             },
         }
 
-        with open(self.decision_log_path, "a") as f:
+        decision_log_file = self.run_dir / f"{intersection_id}/decisions.jsonl"
+        decision_log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(decision_log_file, "a") as f:
             f.write(json.dumps(decision_event) + "\n")
 
         if self.verbose:
