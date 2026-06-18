@@ -67,8 +67,8 @@ def main(args):
                 prompt = getPrompt(state_dict=state_data)
 
                 start_time = time.time()
-                # llm_output = llm.inference(prompt) 
-                llm_output = "<signal>NTST</signal>"  # Placeholder for LLM output, replace with actual inference call
+                llm_output = llm.inference(prompt) 
+                # llm_output = "<signal>NTST</signal>"  # Placeholder for LLM output, replace with actual inference call
                 latency_ms = (time.time() - start_time) * 1000
                 
                 # Parse the LLM output to get the next phase (and potentially duration)
