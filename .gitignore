@@ -18,3 +18,4 @@ Thumbs.db
 uv.lock
 models/LLMs
 logs/
+.ipynb_checkpoints
