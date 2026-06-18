@@ -2,12 +2,13 @@ PHASE_TYPES = ["ALL_RED", "GREEN", "YELLOW"]
 
 # handler to keep track of how long the current phase has been active and when to switch to the next phase
 class PhaseHandler:
-    def __init__(self,env, conf, intersection_id,start_phase='ETWT'):
+    def __init__(self,env, conf, intersection_id,start_phase='ETWT',replay_recorder=None):
         
         self.switch_phase = False
         self.current_phase_type = "GREEN"
         self.next_phase = None
         self.conf = conf
+        self.replay_recorder = replay_recorder
         self.phases = self.conf["phases"].keys()
         self.duration = self.conf["global_settings"]["default_green_duration"]
         self.env = env
@@ -29,12 +30,15 @@ class PhaseHandler:
                     raise ValueError("Next phase has not been set before switching from ALL_RED to GREEN.")
                 self.current_phase = self.next_phase
                 self.env.set_phase(intersection_id=self.intersection_id, phase_config=self.conf["phases"][self.current_phase]["green"])
+                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=self.current_phase, phase_name=self.conf["phases"][self.current_phase]["llm_description"],phase_from_sumo=self.env.get_current_phase(self.intersection_id))
+
         elif self.current_phase_type == "YELLOW":
             self.duration -= 1
             if self.duration <= 0:
                 self.duration = self.conf["global_settings"]["red_duration"]
                 self.current_phase_type = "ALL_RED"
                 self.env.set_phase(intersection_id=self.intersection_id, phase_config=self.conf["global_settings"]["all_red_state"])
+                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=self.current_phase, phase_name=self.conf["phases"][self.current_phase]["llm_description"],phase_from_sumo=self.env.get_current_phase(self.intersection_id))
         elif self.current_phase_type == "GREEN":
             self.duration -= 1
             if self.duration <= 0:
@@ -54,6 +58,7 @@ class PhaseHandler:
         
         if new_phase != self.current_phase:
             self.env.set_phase(intersection_id=self.intersection_id, phase_config=self.conf["phases"][self.current_phase]["yellow"])
+            self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=self.current_phase, phase_name=self.conf["phases"][self.current_phase]["llm_description"],phase_from_sumo=self.env.get_current_phase(self.intersection_id))
             self.current_phase_type = "YELLOW"
             self.next_phase = new_phase
             self.duration = self.conf["global_settings"]["yellow_duration"]  
@@ -61,6 +66,16 @@ class PhaseHandler:
         self.switch_phase = False
 
 
+    def record_replay(self,step,intersection,phase,phase_name):
+            """
+            Records the necessary information to replay the simulation later.
+            This can include the sequence of states, actions, and any random seeds used.
+            """
+            self.replay_record[step] = {
+                "intersection": intersection,
+                "phase": phase,
+                "phase_name": phase_name
+            }
 
     def switch_phase(self):
         return self._switch_phase

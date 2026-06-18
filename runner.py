@@ -1,3 +1,6 @@
+from datetime import datetime
+from pathlib import Path
+
 from sumo_env import SumoEnv
 from utils.prompt_builder import getPrompt
 from models_inference.LLM.open_llm import LLM_Inference
@@ -7,6 +10,8 @@ from utils.metrics_recorder import MetricsRecorder
 import time
 import re
 import argparse
+
+from utils.replay_recorder import ReplayRecorder
 
 
 def parse_args():
@@ -39,11 +44,16 @@ def main(args):
     llm.initialize_llm()
     # Initialize phase handler
     env.start_simulation()
-    recorder = MetricsRecorder(run_name=args.test_name)
+    base_log_dir = "logs"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    records_dir = Path(base_log_dir) / f"{args.test_name}_{timestamp}"
+    run_replay_recorder = ReplayRecorder(simulation_config_path=args.simulation_config,  record_dir = records_dir)
+    recorder = MetricsRecorder(run_dir=records_dir, verbose=True)
+
     intersection_phase_handlers = {}
     intersections = env.get_intersections()
     for intersection_id in intersections:
-        intersection_phase_handlers[intersection_id] = PhaseHandler( env=env, conf=conf, intersection_id=intersection_id, start_phase='ETWT')
+        intersection_phase_handlers[intersection_id] = PhaseHandler( env=env, conf=conf, intersection_id=intersection_id, start_phase='ETWT',replay_recorder=run_replay_recorder)
     for step in range(args.simulation_steps):
         print(f"Simulation step: {step}")
         env.step()
@@ -57,8 +67,8 @@ def main(args):
                 prompt = getPrompt(state_dict=state_data)
 
                 start_time = time.time()
-                llm_output = llm.inference(prompt) 
-                # llm_output = "<signal>NTST</signal>"  # Placeholder for LLM output, replace with actual inference call
+                # llm_output = llm.inference(prompt) 
+                llm_output = "<signal>NTST</signal>"  # Placeholder for LLM output, replace with actual inference call
                 latency_ms = (time.time() - start_time) * 1000
                 
                 # Parse the LLM output to get the next phase (and potentially duration)
@@ -94,6 +104,7 @@ def main(args):
 
     recorder.save_final_summary()
     env.close()
+    run_replay_recorder.save_replay_data()
     
 
         

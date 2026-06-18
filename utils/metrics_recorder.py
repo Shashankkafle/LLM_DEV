@@ -7,11 +7,11 @@ from datetime import datetime
 
 
 class MetricsRecorder:
-    def __init__(self, run_name="default_run", base_log_dir="logs", verbose=True):
+    def __init__(self,run_dir, verbose=True):
         self.verbose = verbose
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_dir = Path(base_log_dir) / f"{run_name}_{timestamp}"
+
+        self.run_dir  = run_dir
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
         self.step_log_path = self.run_dir / "step_summaries.jsonl"
@@ -89,6 +89,7 @@ class MetricsRecorder:
         return summary
 
     def record_decision(self, step, state_dict, prompt, llm_output,
+                        
                         previous_phase, final_phase, fallback_applied,
                         latency_ms, extracted_signal, intersection_id):
         self.total_decisions += 1
@@ -130,3 +131,4 @@ class MetricsRecorder:
             print(f"\n--- Decision @ Step {step} ---")
             print(f"  Extracted: {extracted_signal} | Applied: {final_phase} | Fallback: {fallback_applied}")
             print(f"  Latency: {latency_ms:.1f}ms | Hallucination Rate: {decision_event['metrics']['hallucination_rate']*100:.1f}%")
+

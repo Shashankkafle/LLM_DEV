@@ -96,6 +96,8 @@ class SumoEnv:
 
         print("Initialized SumoEnv with the following movement-lane mapping:", self.movement_lane_map)
 
+    def get_current_step(self):
+        return traci.simulation.getCurrentTime() // 1000  # Convert milliseconds to seconds
     
     def set_phase(self, intersection_id, phase_config):
         try:
@@ -108,6 +110,9 @@ class SumoEnv:
 
     def get_intersections(self):
         return traci.trafficlight.getIDList()
+    
+    def get_current_phase(self, intersection_id):
+        return traci.trafficlight.getRedYellowGreenState(intersection_id)
     
     def get_state(self, intersection_id):
         state = {}
