@@ -104,7 +104,13 @@ def main(args):
 
     recorder.save_final_summary()
     env.close()
-    run_replay_recorder.save_replay_data()
+    original_run_details = {
+        "test_name": args.test_name,
+        "simulation_steps": args.simulation_steps,
+        "simulation_config": args.simulation_config,
+        "llm_path": args.llm_path,
+    }
+    run_replay_recorder.save_replay_data(original_run_details)
     
 
         

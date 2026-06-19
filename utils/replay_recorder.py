@@ -17,6 +17,7 @@ class ReplayRecorder:
             "phase_from_sumo": phase_from_sumo
         }
 
-    def save_replay_data(self):
+    def save_replay_data(self, original_run_details):
+        self.replay_record["original_run_details"] = original_run_details
         with open(f"{self.record_dir}/replay_record.json", "w") as f:
             json.dump(self.replay_record, f, indent=4)
