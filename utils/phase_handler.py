@@ -29,16 +29,18 @@ class PhaseHandler:
                 if self.next_phase is None:
                     raise ValueError("Next phase has not been set before switching from ALL_RED to GREEN.")
                 self.current_phase = self.next_phase
-                self.env.set_phase(intersection_id=self.intersection_id, phase_config=self.conf["phases"][self.current_phase]["green"])
-                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=self.current_phase, phase_name=self.conf["phases"][self.current_phase]["llm_description"],phase_from_sumo=self.env.get_current_phase(self.intersection_id))
+                phase_to_set = self.conf["phases"][self.current_phase]["green"]
+                self.env.set_phase(intersection_id=self.intersection_id, phase_config=phase_to_set)
+                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=phase_to_set, phase_name=f"{self.current_phase}_{self.current_phase_type}",phase_from_sumo=self.env.get_current_phase(self.intersection_id))
 
         elif self.current_phase_type == "YELLOW":
             self.duration -= 1
             if self.duration <= 0:
                 self.duration = self.conf["global_settings"]["red_duration"]
                 self.current_phase_type = "ALL_RED"
-                self.env.set_phase(intersection_id=self.intersection_id, phase_config=self.conf["global_settings"]["all_red_state"])
-                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=self.current_phase, phase_name=self.conf["phases"][self.current_phase]["llm_description"],phase_from_sumo=self.env.get_current_phase(self.intersection_id))
+                phase_to_set = self.conf["global_settings"]["all_red_state"]
+                self.env.set_phase(intersection_id=self.intersection_id, phase_config=phase_to_set)
+                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=phase_to_set, phase_name=f"{self.current_phase}_{self.current_phase_type}",phase_from_sumo=self.env.get_current_phase(self.intersection_id))
         elif self.current_phase_type == "GREEN":
             self.duration -= 1
             if self.duration <= 0:
@@ -57,8 +59,12 @@ class PhaseHandler:
             self.duration = self.conf["global_settings"]["default_green_duration"]  # Reset duration if the same phase is activated again
         
         if new_phase != self.current_phase:
-            self.env.set_phase(intersection_id=self.intersection_id, phase_config=self.conf["phases"][self.current_phase]["yellow"])
-            self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=self.current_phase, phase_name=self.conf["phases"][self.current_phase]["llm_description"],phase_from_sumo=self.env.get_current_phase(self.intersection_id))
+            phase_to_set = self.conf["phases"][self.current_phase]["yellow"]
+            
+            self.env.set_phase(intersection_id=self.intersection_id, phase_config=phase_to_set)
+
+            self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=phase_to_set, phase_name=f"{self.current_phase}_{self.current_phase_type}",phase_from_sumo=self.env.get_current_phase(self.intersection_id))
+
             self.current_phase_type = "YELLOW"
             self.next_phase = new_phase
             self.duration = self.conf["global_settings"]["yellow_duration"]  
