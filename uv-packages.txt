@@ -41,3 +41,4 @@ safetensors>=0.4.3
 tokenizers>=0.19.0
 torch>=2.3.0
 transformers>=4.43.0
+scipy>=1.13.0
