@@ -33,6 +33,11 @@ def parse_llm_signal(raw_text):
             return match.group(1).strip().upper()
     return None
 
+def mock_llm_inference(prompt):
+    """
+    Mock function to simulate LLM inference.
+    """
+    return f"<signal>{list(conf.phases.keys())[len(prompt) % len(conf.phases)]}</signal>"
         
 
 def main(args):
@@ -67,8 +72,8 @@ def main(args):
                 prompt = getPrompt(state_dict=state_data)
 
                 start_time = time.time()
-                llm_output = llm.inference(prompt) 
-                # llm_output = "<signal>NTST</signal>"  # Placeholder for LLM output, replace with actual inference call
+                # llm_output = llm.inference(prompt) 
+                llm_output = mock_llm_inference(prompt)
                 latency_ms = (time.time() - start_time) * 1000
                 
                 # Parse the LLM output to get the next phase (and potentially duration)
