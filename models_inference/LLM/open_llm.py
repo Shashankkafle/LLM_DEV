@@ -22,7 +22,11 @@ class LLM_Inference:
             device_map="auto",
             trust_remote_code=True
         )
-        print(f"[Info] Model device map: {self.model.hf_device_map}")
+        device_map = getattr(self.model, "hf_device_map", None)
+        if device_map is not None:
+            print(f"[Info] Model device map: {device_map}")
+        else:
+            print(f"[Info] No hf_device_map; model on: {self.model.device}")
         self.model_family = self._detect_model_family()
         print(f"[Info] Auto-detected model family: {self.model_family}")
 
