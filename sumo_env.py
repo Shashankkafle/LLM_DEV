@@ -1,5 +1,7 @@
 import traci
-from configurations import INTERSECTION_CONFIG 
+import json
+from configurations import INTERSECTION_CONFIG
+from utils.general_utils import append_to_file, get_phase_name 
 approaches = ["North", "South", "East", "West"]
 movement_to_approach = {
     "ETWT": ["East", "West"],
@@ -8,10 +10,11 @@ movement_to_approach = {
     "NLSL": ["South", "North"]
 }
 class SumoEnv:
-    def __init__(self, sumo_config, use_gui=False):
+    def __init__(self, sumo_config,phase_sequence_dir = None, use_gui=False):
         self.sumo_config = sumo_config
         self.use_gui = use_gui
         self.approach_mapping = None
+        self.set_phase_sequence_dir = phase_sequence_dir
         if self.use_gui:
             sumo_binary = "sumo-gui"
         else:
@@ -101,7 +104,21 @@ class SumoEnv:
     
     def set_phase(self, intersection_id, phase_config):
         try:
+            if self.set_phase_sequence_dir:
+                # Log the phase sequence for this intersection
+                log_file = self.set_phase_sequence_dir / f"{intersection_id}_phase_sequence.json"
+                previous_phase = self.get_current_phase(intersection_id)
+                change_dict = {
+                    "step": self.get_current_step(),
+                    "prev_phase": previous_phase,
+                    "prev_phase_name":get_phase_name(INTERSECTION_CONFIG, previous_phase) ,
+                    "new_phase": phase_config,
+                    "new_phase_name": get_phase_name(INTERSECTION_CONFIG, phase_config)
+
+                }
+                append_to_file(log_file, json.dumps(change_dict) + "\n")
             traci.trafficlight.setRedYellowGreenState(intersection_id, phase_config)
+
         except Exception as e:
             print(f"Error occurred while setting phase for intersection {intersection_id}: {e}")
 

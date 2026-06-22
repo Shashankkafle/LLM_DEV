@@ -37,23 +37,27 @@ def mock_llm_inference(prompt):
     """
     Mock function to simulate LLM inference.
     """
-    return f"<signal>{list(conf.phases.keys())[len(prompt) % len(conf.phases)]}</signal>"
+    phases = list(conf.get("phases").keys())
+    return f"<signal>{phases[len(prompt) % len(phases)]}</signal>"
         
 
 def main(args):
     print("Starting main function...")
     # Initialize SUMO environment
-    env = SumoEnv(sumo_config=args.simulation_config, use_gui=args.use_gui)
     # Initialize LLM
     llm = LLM_Inference(llm_path=args.llm_path)
     llm.initialize_llm()
-    # Initialize phase handler
-    env.start_simulation()
+    
     base_log_dir = "logs"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     records_dir = Path(base_log_dir) / f"{args.test_name}_{timestamp}"
+    phase_sequence_dir = records_dir / "phase_sequences"
+    phase_sequence_dir.mkdir(parents=True, exist_ok=True)
     run_replay_recorder = ReplayRecorder(simulation_config_path=args.simulation_config,  record_dir = records_dir)
     recorder = MetricsRecorder(run_dir=records_dir, verbose=True)
+    env = SumoEnv(sumo_config=args.simulation_config, use_gui=args.use_gui,phase_sequence_dir=phase_sequence_dir)
+    env.start_simulation()
+
 
     intersection_phase_handlers = {}
     intersections = env.get_intersections()
@@ -72,8 +76,8 @@ def main(args):
                 prompt = getPrompt(state_dict=state_data)
 
                 start_time = time.time()
-                # llm_output = llm.inference(prompt) 
-                llm_output = mock_llm_inference(prompt)
+                llm_output = llm.inference(prompt) 
+                # llm_output = mock_llm_inference(prompt)
                 latency_ms = (time.time() - start_time) * 1000
                 
                 # Parse the LLM output to get the next phase (and potentially duration)
