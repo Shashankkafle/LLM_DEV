@@ -1,7 +1,6 @@
 import traci
-import json
 from configurations import INTERSECTION_CONFIG
-from utils.general_utils import append_to_file, get_phase_name 
+from utils.general_utils import append_to_json_file, get_phase_name
 approaches = ["North", "South", "East", "West"]
 movement_to_approach = {
     "ETWT": ["East", "West"],
@@ -103,24 +102,32 @@ class SumoEnv:
         return traci.simulation.getCurrentTime() // 1000  # Convert milliseconds to seconds
     
     def set_phase(self, intersection_id, phase_config):
-        try:
-            if self.set_phase_sequence_dir:
-                # Log the phase sequence for this intersection
-                log_file = self.set_phase_sequence_dir / f"{intersection_id}_phase_sequence.json"
-                previous_phase = self.get_current_phase(intersection_id)
-                change_dict = {
-                    "step": self.get_current_step(),
-                    "prev_phase": previous_phase,
-                    "prev_phase_name":get_phase_name(INTERSECTION_CONFIG, previous_phase) ,
-                    "new_phase": phase_config,
-                    "new_phase_name": get_phase_name(INTERSECTION_CONFIG, phase_config)
+        n_links = len(traci.trafficlight.getControlledLinks(intersection_id))
+        if len(phase_config) != n_links:
+            raise ValueError(
+                f"Phase string length {len(phase_config)} does not match "
+                f"controlled link count {n_links} for intersection {intersection_id}. "
+                f"Phase string: '{phase_config}'"
+            )
 
-                }
-                append_to_file(log_file, json.dumps(change_dict) + "\n")
-            traci.trafficlight.setRedYellowGreenState(intersection_id, phase_config)
+        if self.set_phase_sequence_dir:
+            log_file = self.set_phase_sequence_dir / f"{intersection_id}_phase_sequence.json"
+            previous_phase = self.get_current_phase(intersection_id)
+            change_dict = {
+                "step": self.get_current_step(),
+                "prev_phase": previous_phase,
+                "prev_phase_name": get_phase_name(INTERSECTION_CONFIG, previous_phase),
+                "new_phase": phase_config,
+                "new_phase_name": get_phase_name(INTERSECTION_CONFIG, phase_config),
+            }
+            append_to_json_file(log_file, change_dict)
 
-        except Exception as e:
-            print(f"Error occurred while setting phase for intersection {intersection_id}: {e}")
+        traci.trafficlight.setRedYellowGreenState(intersection_id, phase_config)
+
+        actual = traci.trafficlight.getRedYellowGreenState(intersection_id)
+        if actual != phase_config:
+           raise ValueError("setRedYellowGreenState did not set the expected phase. Check the log for details.")
+        
 
     def close(self):
         traci.close()
