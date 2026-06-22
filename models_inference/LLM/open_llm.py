@@ -10,13 +10,19 @@ class LLM_Inference:
         self.model_family = None
 
     def initialize_llm(self):
-        self.tokenizer = AutoTokenizer.from_pretrained(self.llm_path, trust_remote_code=True)            
+        if torch.cuda.is_available():
+            print(f"[Info] CUDA available: {torch.cuda.get_device_name(0)}")
+        else:
+            print("[Warning] CUDA not available, running on CPU")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(self.llm_path, trust_remote_code=True)
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.llm_path, 
-            torch_dtype=torch.float16, 
-            device_map="auto", 
+            self.llm_path,
+            torch_dtype=torch.float16,
+            device_map="auto",
             trust_remote_code=True
         )
+        print(f"[Info] Model device map: {self.model.hf_device_map}")
         self.model_family = self._detect_model_family()
         print(f"[Info] Auto-detected model family: {self.model_family}")
 
