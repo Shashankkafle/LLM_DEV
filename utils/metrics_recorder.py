@@ -1,18 +1,29 @@
 import json
 import time
-from configurations import MIN_SPEED
+from configurations import (
+    MIN_SPEED,
+    PHASE_NAMES,
+    STEP_SUMMARIES_FILENAME,
+    FINAL_SUMMARY_FILENAME,
+    DECISIONS_FILENAME,
+)
 import traci
 from pathlib import Path
 from datetime import datetime
 
 
 class MetricsRecorder:
-    def __init__(self, run_dir, verbose=True):
+    def __init__(self, run_dir, verbose=True, phase_names=None):
         self.verbose = verbose
+
+        # Valid phase names used to flag LLM hallucinations. Defaults to the
+        # default config's phases; pass the active config's names when running
+        # a non-default intersection config.
+        self.valid_phase_names = phase_names if phase_names is not None else PHASE_NAMES
 
         self.run_dir = run_dir
         self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.step_log_path = self.run_dir / "step_summaries.jsonl"
+        self.step_log_path = self.run_dir / STEP_SUMMARIES_FILENAME
 
         # Per-vehicle trip tracking, keyed by SUMO vehicle id.
         self.depart_times = {}         # veh -> sim time it entered the network
@@ -120,7 +131,7 @@ class MetricsRecorder:
     def save_final_summary(self):
         """Writes the episode summary JSON to disk and prints it."""
         summary = self.get_final_summary()
-        out_path = self.run_dir / "final_summary.json"
+        out_path = self.run_dir / FINAL_SUMMARY_FILENAME
         with open(out_path, "w") as f:
             json.dump(summary, f, indent=2)
         print("\n===== FINAL SIMULATION SUMMARY =====")
@@ -134,7 +145,7 @@ class MetricsRecorder:
                         previous_phase, final_phase, fallback_applied,
                         latency_ms, extracted_signal, intersection_id):
         self.total_decisions += 1
-        if  extracted_signal not in ["NTST", "ETWT", "NLSL", "ELWL"] and extracted_signal != None:
+        if  extracted_signal not in self.valid_phase_names and extracted_signal != None:
             self.total_hallucinations += 1
 
         decision_event = {
@@ -163,7 +174,7 @@ class MetricsRecorder:
             },
         }
 
-        decision_log_file = self.run_dir / f"{intersection_id}/decisions.jsonl"
+        decision_log_file = self.run_dir / f"{intersection_id}/{DECISIONS_FILENAME}"
         decision_log_file.parent.mkdir(parents=True, exist_ok=True)
         with open(decision_log_file, "a") as f:
             f.write(json.dumps(decision_event) + "\n")

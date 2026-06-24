@@ -43,6 +43,12 @@ from datetime import datetime
 
 import traci
 
+from configurations import (
+    SUMO_BINARY,
+    SUMO_GUI_BINARY,
+    RERUNS_DIR_NAME,
+    REPLAY_META_FILENAME,
+)
 from utils.metrics_recorder import MetricsRecorder
 
 # metrics_recorder.py imports configurations.MIN_SPEED directly, so
@@ -67,7 +73,7 @@ def load_schedule(schedule_path: Path):
 
 def _load_jsonl_schedule(events_path: Path):
     """New format: one event per line, run metadata in a sidecar file."""
-    meta_path = events_path.parent / "replay_meta.json"
+    meta_path = events_path.parent / REPLAY_META_FILENAME
     if not meta_path.exists():
         raise ValueError(
             f"Expected metadata sidecar next to {events_path.name}: {meta_path}"
@@ -114,7 +120,7 @@ def _load_legacy_schedule(record_path: Path):
 
 
 def build_sumo_cmd(sumocfg_path: str, use_gui: bool):
-    binary = "sumo-gui" if use_gui else "sumo"
+    binary = SUMO_GUI_BINARY if use_gui else SUMO_BINARY
     return [binary, "-c", sumocfg_path]
 
 
@@ -166,7 +172,7 @@ def main():
     safe_name = test_name.replace(" ", "_")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
        
-    run_dir =  Path(schedule_path).parent / "reruns" / f"{safe_name}_{timestamp}"
+    run_dir =  Path(schedule_path).parent / RERUNS_DIR_NAME / f"{safe_name}_{timestamp}"
 
     print(f"Run name      : {run_details.get('test_name', '(unnamed)')}")
     print(f"SUMO config   : {sumocfg_path}")

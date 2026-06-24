@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from configurations import REPLAY_EVENTS_FILENAME, REPLAY_META_FILENAME
+
 
 class ReplayRecorder:
     """
@@ -16,8 +18,8 @@ class ReplayRecorder:
       - replay_meta.json    : details needed to replay the run (config, steps...)
     """
 
-    EVENTS_FILENAME = "replay_record.jsonl"
-    META_FILENAME = "replay_meta.json"
+    EVENTS_FILENAME = REPLAY_EVENTS_FILENAME
+    META_FILENAME = REPLAY_META_FILENAME
 
     def __init__(self, record_dir, meta):
         self.record_dir = Path(record_dir)

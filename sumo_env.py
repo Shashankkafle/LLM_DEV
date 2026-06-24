@@ -1,5 +1,12 @@
 import traci
-from configurations import INTERSECTION_CONFIG
+from configurations import (
+    INTERSECTION_CONFIG,
+    SUMO_BINARY,
+    SUMO_GUI_BINARY,
+    STOP_SPEED_EARLY_QUEUE,
+    LANE_SEGMENT_COUNT,
+    PHASE_SEQUENCE_FILENAME_SUFFIX,
+)
 from utils.general_utils import append_to_json_file, get_phase_name
 approaches = ["North", "South", "East", "West"]
 movement_to_approach = {
@@ -9,15 +16,17 @@ movement_to_approach = {
     "NLSL": ["South", "North"]
 }
 class SumoEnv:
-    def __init__(self, sumo_config,phase_sequence_dir = None, use_gui=False):
+    def __init__(self, sumo_config, phase_sequence_dir=None, use_gui=False,
+                 intersection_config=INTERSECTION_CONFIG):
         self.sumo_config = sumo_config
         self.use_gui = use_gui
+        self.intersection_config = intersection_config
         self.approach_mapping = None
         self.set_phase_sequence_dir = phase_sequence_dir
         if self.use_gui:
-            sumo_binary = "sumo-gui"
+            sumo_binary = SUMO_GUI_BINARY
         else:
-            sumo_binary = "sumo"
+            sumo_binary = SUMO_BINARY
         self.cmd = [sumo_binary, "-c", self.sumo_config]
 
     def _build_approach_mapping(self):
@@ -69,7 +78,7 @@ class SumoEnv:
 
         movement_lane_map = {}
 
-        for phase_name, phase_cfg in INTERSECTION_CONFIG["phases"].items():
+        for phase_name, phase_cfg in self.intersection_config["phases"].items():
             phase_string = phase_cfg["green"]
             lanes_for_movement = set()
 
@@ -111,14 +120,14 @@ class SumoEnv:
             )
 
         if self.set_phase_sequence_dir:
-            log_file = self.set_phase_sequence_dir / f"{intersection_id}_phase_sequence.json"
+            log_file = self.set_phase_sequence_dir / f"{intersection_id}{PHASE_SEQUENCE_FILENAME_SUFFIX}"
             previous_phase = self.get_current_phase(intersection_id)
             change_dict = {
                 "step": self.get_current_step(),
                 "prev_phase": previous_phase,
-                "prev_phase_name": get_phase_name(INTERSECTION_CONFIG, previous_phase),
+                "prev_phase_name": get_phase_name(self.intersection_config, previous_phase),
                 "new_phase": phase_config,
-                "new_phase_name": get_phase_name(INTERSECTION_CONFIG, phase_config),
+                "new_phase_name": get_phase_name(self.intersection_config, phase_config),
             }
             append_to_json_file(log_file, change_dict)
 
@@ -145,7 +154,7 @@ class SumoEnv:
         state["movement_states"] = {}   # <-- new
 
         controlled_lanes = list(set(traci.trafficlight.getControlledLanes(intersection_id)))
-        v_stop = 1.39
+        v_stop = STOP_SPEED_EARLY_QUEUE
 
         lane_data = {}  
 
@@ -166,7 +175,7 @@ class SumoEnv:
                 else:
                     pos_from_start = traci.vehicle.getLanePosition(veh_id)
                     distance_to_stopline = max(0.0, lane_length - pos_from_start)
-                    seg_length = lane_length / 3.0
+                    seg_length = lane_length / LANE_SEGMENT_COUNT
 
                     if distance_to_stopline <= seg_length:
                         segment_1_count += 1

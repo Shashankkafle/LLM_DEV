@@ -1,6 +1,13 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+from configurations import (
+    LLM_MAX_NEW_TOKENS,
+    LLM_TEMPERATURE,
+    LLM_DO_SAMPLE,
+    LLM_SYSTEM_PROMPT,
+)
+
 
 class LLM_Inference:
     def __init__(self, llm_path):
@@ -41,7 +48,7 @@ class LLM_Inference:
         return "chatml"
 
     def _format_prompt(self, raw_user_content):
-        system_prompt = "You are an expert in traffic management. You can use your knowledge of traffic commonsense to solve this traffic signal control tasks."
+        system_prompt = LLM_SYSTEM_PROMPT
 
         if self.model_family == "alpaca":
             return f"{system_prompt}\n\n### Instruction:\n{raw_user_content}\n\n### Response:\n"
@@ -64,9 +71,9 @@ class LLM_Inference:
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=1024,
-                temperature=0.0,
-                do_sample=False
+                max_new_tokens=LLM_MAX_NEW_TOKENS,
+                temperature=LLM_TEMPERATURE,
+                do_sample=LLM_DO_SAMPLE
             )
 
         

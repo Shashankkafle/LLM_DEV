@@ -1,8 +1,10 @@
+from configurations import DEFAULT_START_PHASE
+
 PHASE_TYPES = ["ALL_RED", "GREEN", "YELLOW"]
 
 # handler to keep track of how long the current phase has been active and when to switch to the next phase
 class PhaseHandler:
-    def __init__(self,env, conf, intersection_id,start_phase='ETWT',replay_recorder=None):
+    def __init__(self,env, conf, intersection_id,start_phase=DEFAULT_START_PHASE,replay_recorder=None):
         
         self.switch_phase = False
         self.current_phase_type = "GREEN"
