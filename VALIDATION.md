@@ -176,18 +176,26 @@ input would give byte-identical outputs — it does not — so neighbor informat
 flows through `MultiHeadsAttModel` into decisions. This is the correctness guarantee the
 ablation exists to provide.
 
-**(2) Performance — does attention HELP? Inconclusive at low budget.**
-25-round, single-seed, greedy eval: attention did NOT degrade when ablated; self-only was
-marginally *better* (queue 47.5 vs 53.6; travel 336.5 vs 340.3s). Note the ablation does NOT
-change the architecture or parameter count (both networks are identical 18,628-param models;
-only the adjacency INPUT differs — real neighbors vs self). So this is not "a bigger model
-underfitting"; it is that with real adjacency the network must learn to exploit a
-higher-information but noisier neighbor signal, which is harder to optimize at a small budget
-than the effectively-local self-only problem. Consistent with undertraining (source uses 100
-rounds) and single-seed noise. A larger-budget run (60 rounds) is in progress; a fully
-conclusive performance ablation would average over multiple seeds at the full budget.
-**Status: correctness proven; performance benefit not yet demonstrated and may be
-traffic/budget dependent — reported honestly rather than asserted.**
+**(2) Performance — does attention HELP? Inconclusive, but the gap closes with budget.**
+Single-seed greedy eval, hangzhou 4x4 (`average_queue_length`, lower = better):
+
+| Budget | with attention | ablated (self-only) | gap (attn − ablate) |
+|---|---|---|---|
+| 25 rounds | 53.6 | 47.5 | +6.1 (ablate better) |
+| 60 rounds | 47.7 | 46.5 | +1.2 (ablate better) |
+
+At neither budget does ablation *degrade* performance — self-only stays marginally better —
+but the gap shrinks 6.1 → 1.2 as training increases. Note the ablation does NOT change the
+architecture or parameter count (both networks are identical 18,628-param models; only the
+adjacency INPUT differs — real neighbors vs self). So this is not "a bigger model
+underfitting"; with real adjacency the network must learn to exploit a higher-information but
+noisier neighbor signal, which is harder to optimize at a small budget than the
+effectively-local self-only problem. The closing gap is consistent with that undertraining
+explanation (source uses 100 rounds). Remaining confounds being tested up the ladder:
+single-seed noise (A1: 3 seeds @ 60 rounds), training budget (A2: 100 rounds / 3600-step
+episodes), and traffic structure (A3: other 4x4 nets — this Gudang net may not reward
+coordination). **Status: correctness proven; performance benefit not yet demonstrated, but
+trending toward parity with budget — reported honestly rather than asserted.**
 
 ## 9. Still out of scope
 
