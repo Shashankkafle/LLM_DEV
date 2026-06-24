@@ -8,12 +8,15 @@ with the existing MetricsRecorder.
 The schedule comes from a JSON file shaped like:
 
 {
-    "10": {
-        "intersection_id": "intersection_1_1",
-        "phase": "rrrryyrrrrrryyrr",
-        "phase_name": "ETWT_GREEN",
-        "phase_from_sumo": "rrrryyrrrrrryyrr"
-    },
+    "10": [
+        {
+            "intersection_id": "intersection_1_1",
+            "phase": "rrrryyrrrrrryyrr",
+            "phase_name": "ETWT_GREEN",
+            "phase_from_sumo": "rrrryyrrrrrryyrr"
+        },
+        ...  # one entry per intersection that switched on this step
+    ],
     ...
     "original_run_details": {
         "test_name": "metrics test2",
@@ -23,9 +26,11 @@ The schedule comes from a JSON file shaped like:
     }
 }
 
-Numeric keys are simulation steps. At each such step, the named
-intersection's traffic light state is force-set to `phase_from_sumo`
-via traci.trafficlight.setRedYellowGreenState.
+Numeric keys are simulation steps, each mapping to a list of phase events.
+At each such step, every listed intersection's traffic light state is
+force-set to `phase_from_sumo` via traci.trafficlight.setRedYellowGreenState.
+(Older records stored a single event object per step instead of a list;
+those are still accepted.)
 
 Both the SUMO config path and the total step count are read directly
 from original_run_details -- no path/step overrides needed.
@@ -146,9 +151,12 @@ def main():
         for step in range(total_steps):
             traci.simulationStep()
 
-            # Apply any scheduled phase override for this exact step.
-            event = phase_schedule.get(step)
-            if event is not None:
+            # Apply any scheduled phase overrides for this exact step. A step may
+            # hold several events -- one per intersection that switched on it.
+            events = phase_schedule.get(step, [])
+            if isinstance(events, dict):
+                events = [events]  # tolerate old single-event-per-step records
+            for event in events:
                 intersection_id = event["intersection_id"]
                 phase_state = event["phase_from_sumo"]
                 phase_name = event.get("phase_name", "")
