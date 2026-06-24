@@ -6,10 +6,13 @@ the features it wants by name (mirroring CoLight's ``LIST_STATE_FEATURE``); the 
 emits a feature-KEYED dict per intersection, so adding features later (pressure,
 time_this_phase, ...) is purely additive.
 
-Only the three features CoLight needs are implemented now:
+CoLight features:
   - "cur_phase"        : [logical phase index]  (agent expands to 8-bit via PHASE)
   - "lane_num_vehicle" : per-movement vehicle counts in canonical movement order
   - "adjacency_matrix" : top-k neighbor agent indices (self first)
+Advanced CoLight adds (same agent, different features):
+  - "traffic_movement_pressure_queue_efficient" : per-movement efficient queue pressure
+  - "lane_enter_running_part"                    : near-stopline running vehicles per movement
 
 Design: each feature has a PURE core (no TraCI; takes plain data) wrapped by a thin
 env-bound registry function. The pure cores are what the unit tests exercise with
@@ -124,6 +127,45 @@ def expand_state_for_memory(state, phase_map):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Advanced CoLight feature cores (pure)
+# ---------------------------------------------------------------------------
+
+def movement_pressure_efficient(entering_halt, exiting_halt, exiting_lane_count,
+                                movement_order=COLIGHT_MOVEMENT_ORDER):
+    """Efficient queue pressure per movement: entering queue minus the per-lane-
+    normalized exiting (downstream) queue.
+
+    Source `_get_traffic_movement_pressure_efficient`: pressure = entering_queue -
+    exiting_queue / 3, where 3 is CityFlow's lanes-per-approach. Here we normalize by
+    the actual outgoing-edge lane count, so it generalizes to 2-lane and 3-lane nets.
+    Queues are halting (stopped) counts, matching the source's waiting-vehicle queue.
+    """
+    out = []
+    for m in movement_order:
+        n_lanes = exiting_lane_count.get(m, 0) or 0
+        exit_norm = (exiting_halt.get(m, 0.0) / n_lanes) if n_lanes else 0.0
+        out.append(entering_halt.get(m, 0.0) - exit_norm)
+    return out
+
+
+def movement_segment1_counts(state, movement_order=COLIGHT_MOVEMENT_ORDER):
+    """Moving vehicles in the segment nearest the stopline, per movement (an 8-vector).
+
+    Source `lane_enter_running_part` = running (moving) vehicles in the lane part nearest
+    the stopline. `get_state`'s segment_1 already counts moving vehicles in the nearest
+    third of the lane (stopped vehicles are excluded into early_queued), so we reuse it.
+    (Source uses a fixed near-stopline window; this uses the nearest third, net-relative.)
+    """
+    counts = {m: 0 for m in movement_order}
+    for phase_name, approaches in state["movement_states"].items():
+        for token in (phase_name[:2], phase_name[2:]):
+            agg = approaches.get(location_dict[token[0]])
+            if agg is not None:
+                counts[token] = agg["segments"]["segment_1"]
+    return [counts[m] for m in movement_order]
+
+
 # ===========================================================================
 # Env-bound registry functions
 # ===========================================================================
@@ -148,10 +190,70 @@ def _adjacency_matrix(env, intersection_id):
     return cache[intersection_id]
 
 
+def _advanced_movement_topology(env, intersection_id):
+    """Per-atomic-movement entering from-lanes + outgoing edge, cached on env.
+
+    Built once from the controlled links: for each protected-green link, the from_lane
+    is an entering lane (its approach comes from env.approach_mapping) and the to_lane is
+    on the movement's OUTGOING edge. The 4 phases (ETWT/NTST/ELWL/NLSL) each pair two
+    same-type movements, so the movement type is the phase name's 2nd char ('T'/'L').
+    """
+    import traci  # provided by $SUMO_HOME/tools at runtime (see sumo_env.py)
+    cache = getattr(env, "_adv_topology", None)
+    if cache is None:
+        cache = env._adv_topology = {}
+    if intersection_id in cache:
+        return cache[intersection_id]
+
+    approach_to_short = {full: short for short, full in location_dict.items()}  # "East"->"E"
+    links = traci.trafficlight.getControlledLinks(intersection_id)
+    approach_of_lane = env.approach_mapping[intersection_id]
+    in_lanes = {m: set() for m in COLIGHT_MOVEMENT_ORDER}
+    out_edge = {}
+    for phase_name, phase_cfg in env.intersection_config["phases"].items():
+        movement_type = phase_name[1]  # 'T' (through) or 'L' (left)
+        for i, char in enumerate(phase_cfg["green"]):
+            if char != "G":
+                continue
+            for (from_lane, to_lane, _via) in links[i]:
+                approach = approach_of_lane.get(from_lane)
+                if approach is None or approach == "Unknown":
+                    continue
+                movement = approach_to_short[approach] + movement_type
+                in_lanes[movement].add(from_lane)
+                out_edge.setdefault(movement, traci.lane.getEdgeID(to_lane))
+
+    cache[intersection_id] = {"in_lanes": in_lanes, "out_edge": out_edge}
+    return cache[intersection_id]
+
+
+def _traffic_movement_pressure_queue_efficient(env, intersection_id):
+    import traci  # provided by $SUMO_HOME/tools at runtime (see sumo_env.py)
+    topo = _advanced_movement_topology(env, intersection_id)
+    entering, exiting_halt, exiting_lanes = {}, {}, {}
+    for movement in COLIGHT_MOVEMENT_ORDER:
+        entering[movement] = sum(
+            traci.lane.getLastStepHaltingNumber(lane) for lane in topo["in_lanes"][movement])
+        edge = topo["out_edge"].get(movement)
+        if edge is None:
+            exiting_halt[movement], exiting_lanes[movement] = 0.0, 0
+        else:
+            exiting_halt[movement] = traci.edge.getLastStepHaltingNumber(edge)
+            exiting_lanes[movement] = traci.edge.getLaneNumber(edge)
+    return movement_pressure_efficient(entering, exiting_halt, exiting_lanes)
+
+
+def _lane_enter_running_part(env, intersection_id):
+    return movement_segment1_counts(env.get_state(intersection_id))
+
+
 FEATURE_REGISTRY = {
     "cur_phase": _cur_phase,
     "lane_num_vehicle": _lane_num_vehicle,
     "adjacency_matrix": _adjacency_matrix,
+    # Advanced CoLight features
+    "traffic_movement_pressure_queue_efficient": _traffic_movement_pressure_queue_efficient,
+    "lane_enter_running_part": _lane_enter_running_part,
 }
 
 
