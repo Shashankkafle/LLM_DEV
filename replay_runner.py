@@ -5,39 +5,34 @@ Runs a SUMO simulation via TraCI, applying a schedule of traffic-light
 phase overrides at specific simulation steps, and recording metrics
 with the existing MetricsRecorder.
 
-The schedule comes from a JSON file shaped like:
+The schedule comes from a JSONL event stream (replay_record.jsonl), one event
+per line:
 
-{
-    "10": [
-        {
-            "intersection_id": "intersection_1_1",
-            "phase": "rrrryyrrrrrryyrr",
-            "phase_name": "ETWT_GREEN",
-            "phase_from_sumo": "rrrryyrrrrrryyrr"
-        },
-        ...  # one entry per intersection that switched on this step
-    ],
+    {"step": 10, "intersection_id": "intersection_1_1", "phase": "rrrryyrr...", "phase_name": "ETWT_GREEN"}
+    {"step": 10, "intersection_id": "intersection_1_4", "phase": "GGGrrrrr...", "phase_name": "NTST_GREEN"}
     ...
-    "original_run_details": {
+
+Run metadata lives in a sidecar `replay_meta.json` next to it:
+
+    {
         "test_name": "metrics test2",
         "simulation_steps": 3600,
-        "simulation_config": "dataset/sumo_version/hangzhou_1x1_bc-tyc_18041608_1h/roadnet.sumocfg",
+        "simulation_config": "dataset/.../roadnet.sumocfg",
         "llm_path": "..."   # ignored
     }
-}
 
-Numeric keys are simulation steps, each mapping to a list of phase events.
-At each such step, every listed intersection's traffic light state is
-force-set to `phase_from_sumo` via traci.trafficlight.setRedYellowGreenState.
-(Older records stored a single event object per step instead of a list;
-those are still accepted.)
+Events are grouped by step on load. At each step, every listed intersection's
+traffic light state is force-set to `phase` via
+traci.trafficlight.setRedYellowGreenState. The SUMO config path and total step
+count are read from the sidecar -- no path/step overrides needed.
 
-Both the SUMO config path and the total step count are read directly
-from original_run_details -- no path/step overrides needed.
+Legacy records (a single replay_record.json with step keys and an in-band
+`original_run_details` block) are still accepted.
 
 Usage:
-    python run_phase_schedule_sim.py schedule.json
-    python run_phase_schedule_sim.py schedule.json --no-gui
+    python run_phase_schedule_sim.py path/to/replay_record.jsonl
+    python run_phase_schedule_sim.py path/to/replay_record.jsonl --no-gui
+    python run_phase_schedule_sim.py path/to/replay_record.json    # legacy
 """
 
 import argparse
@@ -57,16 +52,49 @@ from utils.metrics_recorder import MetricsRecorder
 
 def load_schedule(schedule_path: Path):
     """
-    Splits the JSON into:
-      - phase_schedule: {int_step: {...phase info...}}
-      - run_details: the 'original_run_details' block
+    Loads a replay record, returning:
+      - phase_schedule: {int_step: [event, ...]}
+      - run_details: the run metadata (config path, step count, ...)
+
+    A .jsonl path is read as the new streamed format (with a sidecar
+    replay_meta.json); anything else is read as the legacy single-JSON format.
     """
-    with open(schedule_path, "r") as f:
+    schedule_path = Path(schedule_path)
+    if schedule_path.suffix == ".jsonl":
+        return _load_jsonl_schedule(schedule_path)
+    return _load_legacy_schedule(schedule_path)
+
+
+def _load_jsonl_schedule(events_path: Path):
+    """New format: one event per line, run metadata in a sidecar file."""
+    meta_path = events_path.parent / "replay_meta.json"
+    if not meta_path.exists():
+        raise ValueError(
+            f"Expected metadata sidecar next to {events_path.name}: {meta_path}"
+        )
+    with open(meta_path, "r") as f:
+        run_details = json.load(f)
+
+    phase_schedule = {}
+    with open(events_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            event = json.loads(line)
+            phase_schedule.setdefault(event["step"], []).append(event)
+
+    return phase_schedule, run_details
+
+
+def _load_legacy_schedule(record_path: Path):
+    """Old format: a single JSON object keyed by step, metadata in-band."""
+    with open(record_path, "r") as f:
         raw = json.load(f)
 
     if "original_run_details" not in raw:
         raise ValueError(
-            "Schedule JSON is missing 'original_run_details' "
+            "Legacy record is missing 'original_run_details' "
             "(needed for simulation_config and simulation_steps)."
         )
     run_details = raw.pop("original_run_details")
@@ -78,7 +106,9 @@ def load_schedule(schedule_path: Path):
         except ValueError:
             print(f"Skipping non-numeric schedule key: {key!r}")
             continue
-        phase_schedule[step] = value
+        # Old records stored either a single event or (after the first fix) a
+        # list per step; normalize both to a list.
+        phase_schedule[step] = value if isinstance(value, list) else [value]
 
     return phase_schedule, run_details
 
@@ -90,7 +120,11 @@ def build_sumo_cmd(sumocfg_path: str, use_gui: bool):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("replay_record", type=str, help="Path to the replay record JSON file")
+    parser.add_argument(
+        "replay_record",
+        type=str,
+        help="Path to the replay record (replay_record.jsonl, or a legacy .json)",
+    )
     parser.add_argument(
         "--no-gui",
         action="store_true",
@@ -153,12 +187,9 @@ def main():
 
             # Apply any scheduled phase overrides for this exact step. A step may
             # hold several events -- one per intersection that switched on it.
-            events = phase_schedule.get(step, [])
-            if isinstance(events, dict):
-                events = [events]  # tolerate old single-event-per-step records
-            for event in events:
+            for event in phase_schedule.get(step, []):
                 intersection_id = event["intersection_id"]
-                phase_state = event["phase_from_sumo"]
+                phase_state = event["phase"]
                 phase_name = event.get("phase_name", "")
 
                 try:

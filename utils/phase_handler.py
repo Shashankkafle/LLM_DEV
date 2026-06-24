@@ -31,7 +31,7 @@ class PhaseHandler:
                 self.current_phase = self.next_phase
                 phase_to_set = self.conf["phases"][self.current_phase]["green"]
                 self.env.set_phase(intersection_id=self.intersection_id, phase_config=phase_to_set)
-                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=phase_to_set, phase_name=f"{self.current_phase}_{self.current_phase_type}",phase_from_sumo=self.env.get_current_phase(self.intersection_id))
+                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=phase_to_set, phase_name=f"{self.current_phase}_{self.current_phase_type}")
 
         elif self.current_phase_type == "YELLOW":
             self.duration -= 1
@@ -40,7 +40,7 @@ class PhaseHandler:
                 self.current_phase_type = "ALL_RED"
                 phase_to_set = self.conf["global_settings"]["all_red_state"]
                 self.env.set_phase(intersection_id=self.intersection_id, phase_config=phase_to_set)
-                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=phase_to_set, phase_name=f"{self.current_phase}_{self.current_phase_type}",phase_from_sumo=self.env.get_current_phase(self.intersection_id))
+                self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=phase_to_set, phase_name=f"{self.current_phase}_{self.current_phase_type}")
         elif self.current_phase_type == "GREEN":
             self.duration -= 1
             if self.duration <= 0:
@@ -63,7 +63,7 @@ class PhaseHandler:
             
             self.env.set_phase(intersection_id=self.intersection_id, phase_config=phase_to_set)
 
-            self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=phase_to_set, phase_name=f"{self.current_phase}_{self.current_phase_type}",phase_from_sumo=self.env.get_current_phase(self.intersection_id))
+            self.replay_recorder.record_phase_change(step=self.env.get_current_step(), intersection_id=self.intersection_id, phase=phase_to_set, phase_name=f"{self.current_phase}_{self.current_phase_type}")
 
             self.current_phase_type = "YELLOW"
             self.next_phase = new_phase

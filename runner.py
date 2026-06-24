@@ -53,7 +53,13 @@ def main(args):
     records_dir = Path(base_log_dir) / f"{args.test_name}_{timestamp}"
     phase_sequence_dir = records_dir / "phase_sequences"
     phase_sequence_dir.mkdir(parents=True, exist_ok=True)
-    run_replay_recorder = ReplayRecorder(simulation_config_path=args.simulation_config,  record_dir = records_dir)
+    original_run_details = {
+        "test_name": args.test_name,
+        "simulation_steps": args.simulation_steps,
+        "simulation_config": args.simulation_config,
+        "llm_path": args.llm_path,
+    }
+    run_replay_recorder = ReplayRecorder(record_dir=records_dir, meta=original_run_details)
     recorder = MetricsRecorder(run_dir=records_dir, verbose=True)
     env = SumoEnv(sumo_config=args.simulation_config, use_gui=args.use_gui,phase_sequence_dir=phase_sequence_dir)
     env.start_simulation()
@@ -113,14 +119,9 @@ def main(args):
 
     recorder.save_final_summary()
     env.close()
-    original_run_details = {
-        "test_name": args.test_name,
-        "simulation_steps": args.simulation_steps,
-        "simulation_config": args.simulation_config,
-        "llm_path": args.llm_path,
-    }
-    run_replay_recorder.save_replay_data(original_run_details)
-    
+    # Replay events + metadata were streamed to disk during the run; nothing
+    # left to flush here.
+
 
         
 
