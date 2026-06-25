@@ -184,18 +184,32 @@ Single-seed greedy eval, hangzhou 4x4 (`average_queue_length`, lower = better):
 | 25 rounds | 53.6 | 47.5 | +6.1 (ablate better) |
 | 60 rounds | 47.7 | 46.5 | +1.2 (ablate better) |
 
-At neither budget does ablation *degrade* performance — self-only stays marginally better —
-but the gap shrinks 6.1 → 1.2 as training increases. Note the ablation does NOT change the
-architecture or parameter count (both networks are identical 18,628-param models; only the
-adjacency INPUT differs — real neighbors vs self). So this is not "a bigger model
-underfitting"; with real adjacency the network must learn to exploit a higher-information but
-noisier neighbor signal, which is harder to optimize at a small budget than the
-effectively-local self-only problem. The closing gap is consistent with that undertraining
-explanation (source uses 100 rounds). Remaining confounds being tested up the ladder:
-single-seed noise (A1: 3 seeds @ 60 rounds), training budget (A2: 100 rounds / 3600-step
-episodes), and traffic structure (A3: other 4x4 nets — this Gudang net may not reward
-coordination). **Status: correctness proven; performance benefit not yet demonstrated, but
-trending toward parity with budget — reported honestly rather than asserted.**
+Single-seed (seed 42), ablation never *degraded* performance and the gap shrank 6.1 → 1.2 as
+training increased. The ablation does NOT change the architecture or parameter count (both
+networks are identical 18,628-param models; only the adjacency INPUT differs — real neighbors
+vs self), so this is not "a bigger model underfitting."
+
+**A1 — multi-seed @ 60 rounds (the decisive rung): the single-seed gap was noise.**
+
+| seed | attention | ablated | gap (attn − ablate) |
+|---|---|---|---|
+| 42 | 47.73 | 46.51 | +1.22 (ablate better) |
+| 1 | 45.51 | 46.08 | −0.57 (attn better) |
+| 7 | 46.04 | 47.99 | −1.95 (attn better) |
+| **mean ± std** | **46.43 ± 0.95** | **46.86 ± 0.82** | **−0.43 (attn better)** |
+
+The per-seed gap **flips sign**, and averaged over seeds attention is marginally *better*
+(46.43 vs 46.86) — a difference well inside the ±~0.9 seed std. So at 60 rounds attention and
+self-only are at **statistical parity, attention nominally ahead**; the earlier single-seed
+"self-only is better" was seed noise, not a coordination deficit. (Travel time is likewise a
+wash: attn mean 335.2 vs ablate 333.8.)
+
+**Conclusion:** the attention is correctly wired (proven, §8.1) and, once seed noise is
+averaged out, does NOT hurt — it is at parity and nominally ahead at 60 rounds. A clear
+*positive* coordination margin (CoLight's paper claim) would need more budget and/or traffic
+with stronger corridor structure; tested next as A2 (100 rounds, same net) and A3 (other 4x4
+nets). **Status: correctness proven; performance at multi-seed parity (attention nominally
+ahead) — reported honestly rather than asserted.**
 
 ## 9. Still out of scope
 
