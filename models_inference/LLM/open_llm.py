@@ -15,6 +15,7 @@ class LLM_Inference:
         self.model = None
         self.tokenizer = None
         self.model_family = None
+        self._logged_first_prompt = False
 
     def initialize_llm(self):
         if torch.cuda.is_available():
@@ -51,18 +52,53 @@ class LLM_Inference:
         system_prompt = LLM_SYSTEM_PROMPT
 
         if self.model_family == "alpaca":
-            return f"{system_prompt}\n\n### Instruction:\n{raw_user_content}\n\n### Response:\n"
+            alpaca = f"{system_prompt}\n\n### Instruction:\n{raw_user_content}\n\n### Response:\n"
+            return self._log_first_prompt(alpaca)
 
         # Only reach here for chatml — guard against missing template
         if not getattr(self.tokenizer, "chat_template", None):
             print("[Warning] chatml family detected but no chat_template found. Falling back to Alpaca.")
-            return f"{system_prompt}\n\n### Instruction:\n{raw_user_content}\n\n### Response:\n"
+            alpaca = f"{system_prompt}\n\n### Instruction:\n{raw_user_content}\n\n### Response:\n"
+            return self._log_first_prompt(alpaca)
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": raw_user_content}
-        ]
-        return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        # Prefer a proper system + user turn. Some fine-tuned chat templates
+        # (seen on Llama2-derived models) reject a separate "system" role; if so,
+        # fold the system text into the user turn rather than crashing mid-run.
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": raw_user_content},
+            ]
+            formatted = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        except Exception as e:
+            print(f"[Warning] chat template rejected a system role ({e}); "
+                  "folding the system prompt into the user turn.")
+            messages = [
+                {"role": "user", "content": f"{system_prompt}\n\n{raw_user_content}"},
+            ]
+            formatted = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        return self._log_first_prompt(formatted)
+
+    def _log_first_prompt(self, formatted_prompt):
+        """Print the exact templated prompt once.
+
+        Lets a smoke run confirm the wrapper the model actually receives (e.g.
+        that LightGPT/Llama2 gets the format it was fine-tuned for) -- the
+        decision log stores the raw prompt, not this final templated string.
+        """
+        if not self._logged_first_prompt:
+            print(
+                "[Info] First formatted prompt sent to the model:\n"
+                "-------- BEGIN FORMATTED PROMPT --------\n"
+                f"{formatted_prompt}\n"
+                "-------- END FORMATTED PROMPT --------"
+            )
+            self._logged_first_prompt = True
+        return formatted_prompt
 
     def inference(self, raw_prompt):
         formatted_prompt = self._format_prompt(raw_prompt)

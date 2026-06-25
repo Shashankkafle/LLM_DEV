@@ -50,6 +50,23 @@ def parse_llm_signal(raw_text):
             return match.group(1).strip().upper()
     return None
 
+
+def state_is_empty(state_dict):
+    """True when no vehicles are present on any controlled lane of the intersection.
+
+    Uses the per-lane counts (``lane_states``) so each lane is counted once. An
+    empty intersection has no decision to make, so keeping the current phase is
+    the correct, deliberate action -- not a parse failure. We detect this from
+    the state we already have, rather than asking the LLM to recognise "zero".
+    """
+    lane_states = state_dict.get("lane_states", {})
+    for lane in lane_states.values():
+        if lane.get("early_queued", 0) > 0:
+            return False
+        if any(count > 0 for count in lane.get("segments", {}).values()):
+            return False
+    return True
+
 def mock_llm_inference(prompt, conf):
     """
     Mock function to simulate LLM inference.
@@ -102,42 +119,49 @@ def main(args):
         for intersection_id, handler in intersection_phase_handlers.items():
             handler.step()
             if handler.switch_phase:
-                
-                state_data = env.get_state(intersection_id) 
-                                
-                prompt = getPrompt(state_dict=state_data)
 
-                start_time = time.time()
-                llm_output = llm.inference(prompt)
-                # llm_output = mock_llm_inference(prompt, conf)
-                latency_ms = (time.time() - start_time) * 1000
-                
-                # Parse the LLM output to get the next phase (and potentially duration)
-                extracted_signal = parse_llm_signal(llm_output)
-                next_phase = extracted_signal if extracted_signal else handler.current_phase
-
-                fallback_applied = False
-                if extracted_signal not in conf["phases"]:
-                    print(f"[Warning] Invalid phase '{extracted_signal}' at step {step}.")
-                    extracted_signal = handler.current_phase
-                    fallback_applied = True
-
-
-                # next_phase =  (list(conf["phases"].keys()))[step % len(conf["phases"].keys())]  # Placeholder for LLM output, cycling through phases for testing
-                
-                # Fallback mechanism if the LLM hallucinates an invalid phase
-                if next_phase not in conf["phases"]:
-                    print(f"[Warning] Invalid phase '{next_phase}' generated at step {step}. Defaulting to current phase.")
-                    next_phase = handler.current_phase
-
+                state_data = env.get_state(intersection_id)
                 previous_phase = handler.current_phase
+
+                # Classify every decision point into exactly one of three outcomes
+                # so that "nothing to do" is never confused with "model failed".
+                if state_is_empty(state_data):
+                    # No vehicles waiting or approaching: holding the current phase
+                    # is correct. Skip the (expensive) LLM call entirely.
+                    decision_type = "no_action_empty"
+                    prompt = None
+                    llm_output = None
+                    latency_ms = 0.0
+                    extracted_signal = None
+                    next_phase = previous_phase
+                else:
+                    prompt = getPrompt(state_dict=state_data)
+                    start_time = time.time()
+                    llm_output = llm.inference(prompt)
+                    # llm_output = mock_llm_inference(prompt, conf)
+                    latency_ms = (time.time() - start_time) * 1000
+
+                    # Raw parse result: None if no <signal> tag, otherwise the
+                    # tag's contents (which may still be an invalid phase name).
+                    extracted_signal = parse_llm_signal(llm_output)
+                    if extracted_signal in conf["phases"]:
+                        decision_type = "llm_decision"
+                        next_phase = extracted_signal
+                    else:
+                        # Non-empty intersection but the model gave no usable answer
+                        # (truncated / no tag) or named an invalid phase. Hold the
+                        # current phase, but record this as a genuine failure.
+                        decision_type = "fallback_parse_error"
+                        next_phase = previous_phase
+                        print(f"[Warning] No valid signal ('{extracted_signal}') at step {step}, "
+                              f"intersection {intersection_id}. Holding {previous_phase}.")
 
                 handler.activate_phase(next_phase)
 
                 recorder.record_decision(
-                    step=step, state_dict=state_data, prompt=prompt, 
-                    llm_output=llm_output, previous_phase=previous_phase, 
-                    final_phase=next_phase, fallback_applied=fallback_applied, 
+                    step=step, state_dict=state_data, prompt=prompt,
+                    llm_output=llm_output, previous_phase=previous_phase,
+                    final_phase=next_phase, decision_type=decision_type,
                     latency_ms=latency_ms,
                     extracted_signal=extracted_signal,
                     intersection_id=intersection_id

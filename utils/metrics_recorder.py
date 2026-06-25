@@ -38,9 +38,13 @@ class MetricsRecorder:
         # One network-wide stopped-vehicle count per step (snapshot, time-averaged later).
         self.queue_lengths = []
 
-        # LLM decision counters.
-        self.total_decisions = 0
-        self.total_hallucinations = 0
+        # Decision-outcome counters. Every decision point is exactly one type;
+        # see record_decision for the three-way classification.
+        self.total_decisions = 0            # all decision points, every type
+        self.decisions_no_action_empty = 0  # intersection empty -> held phase, no LLM call
+        self.decisions_llm_valid = 0        # LLM returned a valid <signal>
+        self.decisions_no_answer = 0        # LLM queried but produced no <signal> tag
+        self.total_hallucinations = 0       # LLM produced a <signal> tag naming an invalid phase
 
     def _trip_averages(self):
         """Averages over vehicles that have actually completed their trip so far."""
@@ -120,11 +124,27 @@ class MetricsRecorder:
         summary["loaded_but_never_departed"] = max(total_loaded - total_departed, 0)
         summary["still_running_at_end"] = max(total_departed - total_arrived, 0)
 
+        # Decision-outcome breakdown. "LLM-queried" excludes empty-intersection
+        # no-ops, so the rates below describe only the steps where a decision was
+        # actually asked of the model -- the meaningful denominator.
+        llm_queried = (
+            self.decisions_llm_valid + self.decisions_no_answer + self.total_hallucinations
+        )
         summary["total_decisions"] = self.total_decisions
+        summary["decisions_no_action_empty"] = self.decisions_no_action_empty
+        summary["decisions_llm_queried"] = llm_queried
+        summary["llm_valid_decisions"] = self.decisions_llm_valid
+        summary["llm_no_answer"] = self.decisions_no_answer
         summary["total_hallucinations"] = self.total_hallucinations
+        summary["valid_decision_rate"] = (
+            round(self.decisions_llm_valid / llm_queried, 4) if llm_queried > 0 else None
+        )
+        summary["parse_error_rate"] = (
+            round((self.decisions_no_answer + self.total_hallucinations) / llm_queried, 4)
+            if llm_queried > 0 else None
+        )
         summary["hallucination_rate"] = (
-            round(self.total_hallucinations / self.total_decisions, 4)
-            if self.total_decisions > 0 else None
+            round(self.total_hallucinations / llm_queried, 4) if llm_queried > 0 else None
         )
         return summary
 
@@ -141,12 +161,32 @@ class MetricsRecorder:
         return summary
 
     def record_decision(self, step, state_dict, prompt, llm_output,
-
-                        previous_phase, final_phase, fallback_applied,
+                        previous_phase, final_phase, decision_type,
                         latency_ms, extracted_signal, intersection_id):
+        """Record one decision point.
+
+        decision_type is one of:
+          - "no_action_empty"      intersection empty; phase held, no LLM call
+          - "llm_decision"         LLM returned a valid <signal>
+          - "fallback_parse_error" LLM queried but gave no usable / valid answer
+
+        extracted_signal is the RAW parse result: None when no <signal> tag was
+        produced, otherwise the tag's text (which may be an invalid phase name).
+        """
         self.total_decisions += 1
-        if  extracted_signal not in self.valid_phase_names and extracted_signal != None:
-            self.total_hallucinations += 1
+
+        if decision_type == "no_action_empty":
+            self.decisions_no_action_empty += 1
+            parsing_valid = None  # no LLM call was made, so the field is N/A
+        elif decision_type == "llm_decision":
+            self.decisions_llm_valid += 1
+            parsing_valid = True
+        else:  # "fallback_parse_error" -- distinguish "no answer" from "hallucination"
+            if extracted_signal is None:
+                self.decisions_no_answer += 1   # truncated output / no tag at all
+            else:
+                self.total_hallucinations += 1  # tag present but not a valid phase
+            parsing_valid = False
 
         decision_event = {
             "step": step,
@@ -157,20 +197,20 @@ class MetricsRecorder:
             "llm_output": {
                 "raw_text": llm_output,
                 "extracted_signal": extracted_signal,
-                "parsing_valid": extracted_signal is not None,
+                "parsing_valid": parsing_valid,
             },
             "phase_action": {
+                "decision_type": decision_type,
                 "requested_phase": extracted_signal,
                 "previous_phase": previous_phase,
                 "phase_changed": previous_phase != final_phase,
                 "activated_phase": final_phase,
-                "fallback_applied": fallback_applied,
+                # Kept for continuity with earlier logs; now means "real failure"
+                # only (empty-intersection no-ops are NOT counted as fallbacks).
+                "fallback_applied": decision_type == "fallback_parse_error",
             },
             "metrics": {
                 "inference_latency_ms": round(latency_ms, 2),
-                "hallucination_rate": round(
-                    self.total_hallucinations / self.total_decisions, 2
-                ),
             },
         }
 
@@ -180,6 +220,6 @@ class MetricsRecorder:
             f.write(json.dumps(decision_event) + "\n")
 
         if self.verbose:
-            print(f"\n--- Decision @ Step {step} ---")
-            print(f"  Extracted: {extracted_signal} | Applied: {final_phase} | Fallback: {fallback_applied}")
-            print(f"  Latency: {latency_ms:.1f}ms | Hallucination Rate: {decision_event['metrics']['hallucination_rate']*100:.1f}%")
+            print(f"\n--- Decision @ Step {step} ({decision_type}) ---")
+            print(f"  Extracted: {extracted_signal} | Applied: {final_phase} | parsing_valid: {parsing_valid}")
+            print(f"  Latency: {latency_ms:.1f}ms")
