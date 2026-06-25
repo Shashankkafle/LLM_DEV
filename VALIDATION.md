@@ -220,22 +220,29 @@ rounds. So even at full budget there is **no robust margin either way on this ne
 | Single-seed trend | seed 42, 25/60/100 rounds | gap shrinks 6.1 → 1.2 → 1.0 (queue); travel flips to attn by 100 |
 | **A1 multi-seed** | 3 seeds @ 60 rounds | **parity** — gap flips sign across seeds; mean 46.43 (attn) vs 46.86 (ablate) |
 | A2 full budget | seed 42 @ 100 rounds | mixed/small — attn better travel, self-only better queue (seed-42 bias) |
-| A3 other nets | — | not run (descoped) |
+| A3 other net (`syn_4x4_gaussian`) | seed 42 @ 60 rounds | parity again — attn queue 294.97 / travel 247.8s vs ablate 284.28 / 245.7s; net is near-gridlock (queue ~290 vs Gudang ~46), so a poor discriminator |
+
+**A3 — other net (`syn_4x4_gaussian`, uniform synthetic demand, seed 42 @ 60 rounds):**
+attn queue 294.97 / travel 247.8s / 2871 completed vs ablate queue 284.28 / travel 245.7s /
+2865 completed. Self-only is marginally better again — but (a) seed 42 is the seed A1 showed is
+queue-biased toward self-only, and (b) this net is **oversaturated** (queue ~290 ≈ near
+gridlock, 6× Gudang), so neither controller can do much and it barely discriminates coordination
+value. Same parity conclusion as Gudang.
 
 **Conclusion (honest):** CoLight's neighbor attention is **correctly wired** (proven), and on
-the hangzhou 4x4 Gudang net at these budgets it performs at **statistical parity** with
-isolated (self-only) control — it neither clearly helps nor hurts; apparent single-seed gaps
-are seed noise. A clear *positive* coordination margin (the paper's claim) is not demonstrated
-here and would likely need traffic with stronger corridor structure and/or more extensive
-tuning — consistent with the project note that exact paper numbers require CityFlow. This does
-not weaken the baseline: its job is to be a faithful, runnable, correctly-wired comparator,
-which it is. **Status: correctness proven; performance at parity, reported honestly rather
-than asserted.**
+both 4x4 nets tested (Gudang real traffic and `syn_4x4_gaussian` synthetic) at these budgets it
+performs at **statistical parity** with isolated (self-only) control — it neither clearly helps
+nor hurts; apparent single-seed gaps are seed noise. A clear *positive* coordination margin (the
+paper's claim) is not demonstrated here and would likely need traffic with stronger corridor
+structure (e.g. `manhattan_16x3`) and/or more extensive tuning — consistent with the project
+note that exact paper numbers require CityFlow. This does not weaken the baseline: its job is to
+be a faithful, runnable, correctly-wired comparator, which it is. **Status: correctness proven;
+performance at parity across both tested nets, reported honestly rather than asserted.**
 
 ## 9. Still out of scope
 
-- A clear positive coordination margin (corridor-structured traffic / extensive tuning / A3
-  other-net sweep) — descoped; parity is the supported result on this net.
+- A clear positive coordination margin — would need corridor-structured traffic
+  (`manhattan_16x3`) and/or extensive tuning; parity is the supported result on both 4x4 nets
+  tested. (Multi-seed on the other nets and full-budget multi-seed not run.)
 - Cross-controller ordering (CoLight > MaxPressure > FixedTime) — needs those baselines,
   which are explicitly not built yet.
-- Multi-seed mean±std performance ablation at the full 100-round budget.
