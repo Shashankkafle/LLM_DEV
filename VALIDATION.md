@@ -204,15 +204,38 @@ self-only are at **statistical parity, attention nominally ahead**; the earlier 
 "self-only is better" was seed noise, not a coordination deficit. (Travel time is likewise a
 wash: attn mean 335.2 vs ablate 333.8.)
 
-**Conclusion:** the attention is correctly wired (proven, §8.1) and, once seed noise is
-averaged out, does NOT hurt — it is at parity and nominally ahead at 60 rounds. A clear
-*positive* coordination margin (CoLight's paper claim) would need more budget and/or traffic
-with stronger corridor structure; tested next as A2 (100 rounds, same net) and A3 (other 4x4
-nets). **Status: correctness proven; performance at multi-seed parity (attention nominally
-ahead) — reported honestly rather than asserted.**
+**A2 — full budget @ 100 rounds (seed 42, same net):** queue 45.24 (attn) vs 44.25
+(ablate); travel 331.5s (attn) vs 335.4s (ablate). The metrics disagree and both gaps are
+small: attention wins on travel time, self-only wins on queue by ~1.0 — and seed 42 is
+exactly the seed A1 showed is queue-biased toward self-only (seeds 1, 7 favored attention).
+The seed-42 queue gap keeps shrinking with budget (6.1 → 1.2 → 1.0 at 25 → 60 → 100 rounds)
+without crossing to attention-favored, while travel time flips to attention-favored by 100
+rounds. So even at full budget there is **no robust margin either way on this net**.
+
+### Ablation ladder — final synthesis
+
+| Rung | Setup | Result |
+|---|---|---|
+| Wiring (deterministic) | one trained net, real vs self adjacency | **attention is wired** — Q-values change, 1 greedy action flips (§8.1) |
+| Single-seed trend | seed 42, 25/60/100 rounds | gap shrinks 6.1 → 1.2 → 1.0 (queue); travel flips to attn by 100 |
+| **A1 multi-seed** | 3 seeds @ 60 rounds | **parity** — gap flips sign across seeds; mean 46.43 (attn) vs 46.86 (ablate) |
+| A2 full budget | seed 42 @ 100 rounds | mixed/small — attn better travel, self-only better queue (seed-42 bias) |
+| A3 other nets | — | not run (descoped) |
+
+**Conclusion (honest):** CoLight's neighbor attention is **correctly wired** (proven), and on
+the hangzhou 4x4 Gudang net at these budgets it performs at **statistical parity** with
+isolated (self-only) control — it neither clearly helps nor hurts; apparent single-seed gaps
+are seed noise. A clear *positive* coordination margin (the paper's claim) is not demonstrated
+here and would likely need traffic with stronger corridor structure and/or more extensive
+tuning — consistent with the project note that exact paper numbers require CityFlow. This does
+not weaken the baseline: its job is to be a faithful, runnable, correctly-wired comparator,
+which it is. **Status: correctness proven; performance at parity, reported honestly rather
+than asserted.**
 
 ## 9. Still out of scope
 
+- A clear positive coordination margin (corridor-structured traffic / extensive tuning / A3
+  other-net sweep) — descoped; parity is the supported result on this net.
 - Cross-controller ordering (CoLight > MaxPressure > FixedTime) — needs those baselines,
   which are explicitly not built yet.
 - Multi-seed mean±std performance ablation at the full 100-round budget.
