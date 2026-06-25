@@ -41,3 +41,11 @@ safetensors>=0.4.3
 tokenizers>=0.19.0
 torch>=2.3.0
 transformers>=4.43.0
+
+# CoLight RL baseline -- TensorFlow/Keras agent (lifted verbatim from LLMTSCS).
+# tf-keras + TF_USE_LEGACY_KERAS=1 (set in models_inference/RL/colight_agent.py) give
+# Keras-2 semantics on modern TF so the verbatim Keras-2 code runs. Pulls in the TF
+# transitive deps (keras, h5py, grpcio, protobuf, ml_dtypes, ...) via uv. numpy 2.x /
+# torch are unaffected (verified: no downgrades). Needed for runner_colight.py.
+tensorflow-cpu==2.21.0
+tf-keras==2.21.0
