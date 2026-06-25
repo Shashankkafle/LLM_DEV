@@ -39,10 +39,11 @@ class MetricsRecorder:
         self.queue_lengths = []
 
         # Decision-outcome counters. Every decision point is exactly one type;
-        # see record_decision for the three-way classification.
+        # see record_decision for the classification.
         self.total_decisions = 0            # all decision points, every type
         self.decisions_no_action_empty = 0  # intersection empty -> held phase, no LLM call
-        self.decisions_llm_valid = 0        # LLM returned a valid <signal>
+        self.decisions_llm_valid = 0        # LLM named a valid phase <signal>
+        self.decisions_llm_no_action = 0    # LLM explicitly answered "no change" (e.g. None)
         self.decisions_no_answer = 0        # LLM queried but produced no <signal> tag
         self.total_hallucinations = 0       # LLM produced a <signal> tag naming an invalid phase
 
@@ -128,16 +129,19 @@ class MetricsRecorder:
         # no-ops, so the rates below describe only the steps where a decision was
         # actually asked of the model -- the meaningful denominator.
         llm_queried = (
-            self.decisions_llm_valid + self.decisions_no_answer + self.total_hallucinations
+            self.decisions_llm_valid + self.decisions_llm_no_action
+            + self.decisions_no_answer + self.total_hallucinations
         )
+        valid_responses = self.decisions_llm_valid + self.decisions_llm_no_action
         summary["total_decisions"] = self.total_decisions
         summary["decisions_no_action_empty"] = self.decisions_no_action_empty
         summary["decisions_llm_queried"] = llm_queried
-        summary["llm_valid_decisions"] = self.decisions_llm_valid
+        summary["llm_phase_decisions"] = self.decisions_llm_valid
+        summary["llm_no_action_decisions"] = self.decisions_llm_no_action
         summary["llm_no_answer"] = self.decisions_no_answer
         summary["total_hallucinations"] = self.total_hallucinations
-        summary["valid_decision_rate"] = (
-            round(self.decisions_llm_valid / llm_queried, 4) if llm_queried > 0 else None
+        summary["valid_response_rate"] = (
+            round(valid_responses / llm_queried, 4) if llm_queried > 0 else None
         )
         summary["parse_error_rate"] = (
             round((self.decisions_no_answer + self.total_hallucinations) / llm_queried, 4)
@@ -167,7 +171,8 @@ class MetricsRecorder:
 
         decision_type is one of:
           - "no_action_empty"      intersection empty; phase held, no LLM call
-          - "llm_decision"         LLM returned a valid <signal>
+          - "llm_decision"         LLM named a valid phase <signal>
+          - "llm_no_action"        LLM explicitly answered "no change" (e.g. None)
           - "fallback_parse_error" LLM queried but gave no usable / valid answer
 
         extracted_signal is the RAW parse result: None when no <signal> tag was
@@ -181,6 +186,9 @@ class MetricsRecorder:
         elif decision_type == "llm_decision":
             self.decisions_llm_valid += 1
             parsing_valid = True
+        elif decision_type == "llm_no_action":
+            self.decisions_llm_no_action += 1
+            parsing_valid = True  # a parseable, legitimate "hold" answer
         else:  # "fallback_parse_error" -- distinguish "no answer" from "hallucination"
             if extracted_signal is None:
                 self.decisions_no_answer += 1   # truncated output / no tag at all
