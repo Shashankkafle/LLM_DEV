@@ -39,7 +39,11 @@ numpy>=1.26.0
 regex>=2024.5.15
 safetensors>=0.4.3
 tokenizers>=0.19.0
-torch>=2.3.0
+# torch: install SEPARATELY before this file, with an explicit CUDA build, e.g.
+#   pip install "torch>=2.3.0" --index-url https://download.pytorch.org/whl/cu121
+# The cu121 wheel runs on any machine whose driver supports CUDA >= 12.1, which
+# covers all our nodes. It is kept out of this list so the bulk install never
+# pulls the PyPI-default wheel (currently a CUDA-13 build that breaks on our drivers).
 transformers>=4.43.0
 
 # CoLight RL baseline -- TensorFlow/Keras agent (lifted verbatim from LLMTSCS).
