@@ -264,6 +264,33 @@ PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.json"
 REPLAY_EVENTS_FILENAME = "replay_record.jsonl"
 REPLAY_META_FILENAME = "replay_meta.json"
 
+# SUMO writes these on close when the statistics flags are passed (see
+# sumo_statistics_args). MetricsRecorder parses the statistic file for
+# population-faithful, cross-controller-comparable metrics.
+SUMO_TRIPINFO_FILENAME = "tripinfo.xml"
+SUMO_STATISTIC_FILENAME = "sumo_statistics.xml"
+
+
+def sumo_statistics_args(output_dir):
+    """SUMO CLI flags that emit trip statistics into output_dir.
+
+    These give canonical aggregate metrics -- mean travel time (incl. the wait
+    to be inserted), time loss, and inserted/running/waiting/teleported counts
+    -- so every controller is scored on the same honest, full-population basis.
+    Shared by every launcher (LLM, replay, baselines, CoLight eval) so they stay
+    in sync. This is only about emitting output; it does not change SUMO's
+    simulation behavior (teleport/insertion defaults are untouched).
+    """
+    from pathlib import Path
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return [
+        "--tripinfo-output", str(output_dir / SUMO_TRIPINFO_FILENAME),
+        "--statistic-output", str(output_dir / SUMO_STATISTIC_FILENAME),
+        "--duration-log.statistics", "true",
+    ]
+
 
 # =============================================================================
 # CoLight RL baseline (additive -- does not affect the LLM path)

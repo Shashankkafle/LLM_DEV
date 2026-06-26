@@ -263,7 +263,8 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round):
     phase_sequence_dir.mkdir(parents=True, exist_ok=True)
 
     env = SumoEnv(sumo_config=args.simulation_config, use_gui=args.use_gui,
-                  phase_sequence_dir=phase_sequence_dir, intersection_config=conf)
+                  phase_sequence_dir=phase_sequence_dir, intersection_config=conf,
+                  output_dir=records_dir)
     env.start_simulation()
     order = sorted(env.get_intersections())
 
@@ -293,8 +294,9 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round):
                 reward_coeff=COLIGHT_REWARD_QUEUE_COEFF, collect=False,
                 ablate_attention=args.ablate_attention)
 
-    summary = recorder.save_final_summary()
+    # Close SUMO first so it flushes the statistics file, then summarize.
     env.close()
+    summary = recorder.save_final_summary()
     return summary
 
 

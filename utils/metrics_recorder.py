@@ -1,11 +1,13 @@
 import json
 import time
+import xml.etree.ElementTree as ET
 from configurations import (
     MIN_SPEED,
     PHASE_NAMES,
     STEP_SUMMARIES_FILENAME,
     FINAL_SUMMARY_FILENAME,
     DECISIONS_FILENAME,
+    SUMO_STATISTIC_FILENAME,
 )
 import traci
 from pathlib import Path
@@ -100,6 +102,56 @@ class MetricsRecorder:
         with open(self.step_log_path, "a") as f:
             f.write(json.dumps(summary) + "\n")
 
+    def _parse_sumo_statistics(self):
+        """Parse SUMO's --statistic-output (written on close) into
+        population-faithful fields.
+
+        Unlike the trip averages above -- which start the clock at insertion and
+        count only completed trips -- these use SUMO's own per-vehicle
+        accounting: mean duration PLUS the wait-to-insert (departDelay), time
+        loss, and the full inserted/running/never-inserted/teleported breakdown.
+        Returns {} if the file is absent (e.g. a launcher that didn't enable the
+        statistics output, or train-mode), so older runs keep working.
+        """
+        stats_path = Path(self.run_dir) / SUMO_STATISTIC_FILENAME
+        if not stats_path.exists():
+            return {}
+        try:
+            root = ET.parse(stats_path).getroot()
+        except ET.ParseError:
+            return {}
+
+        out = {}
+        vehicles = root.find("vehicles")
+        if vehicles is not None:
+            inserted = int(vehicles.get("inserted", 0))
+            running = int(vehicles.get("running", 0))
+            out["sumo_vehicles_loaded"] = int(vehicles.get("loaded", 0))
+            out["sumo_vehicles_inserted"] = inserted
+            out["sumo_vehicles_running_at_end"] = running
+            # Scheduled to depart but never inserted -- source-edge gridlock.
+            out["sumo_vehicles_not_inserted"] = int(vehicles.get("waiting", 0))
+            out["sumo_vehicles_finished"] = inserted - running
+
+        teleports = root.find("teleports")
+        if teleports is not None:
+            out["sumo_teleports_total"] = int(teleports.get("total", 0))
+
+        trip = root.find("vehicleTripStatistics")
+        if trip is not None:
+            duration = float(trip.get("duration", 0.0))
+            depart_delay = float(trip.get("departDelay", 0.0))
+            out["sumo_trip_count"] = int(trip.get("count", 0))
+            out["sumo_mean_trip_duration_s"] = round(duration, 2)
+            out["sumo_mean_depart_delay_s"] = round(depart_delay, 2)
+            out["sumo_mean_time_loss_s"] = round(float(trip.get("timeLoss", 0.0)), 2)
+            # CityFlow-comparable travel time: charge the wait-to-insert on top
+            # of in-network duration. Still excludes never-inserted vehicles,
+            # which are reported separately as sumo_vehicles_not_inserted.
+            out["sumo_effective_att_s"] = round(duration + depart_delay, 2)
+
+        return out
+
     def get_final_summary(self):
         """
         Returns overall episode-level metrics after the simulation ends.
@@ -146,6 +198,10 @@ class MetricsRecorder:
         summary["hallucination_rate"] = (
             round(self.total_hallucinations / llm_queried, 4) if llm_queried > 0 else None
         )
+
+        # Population-faithful metrics from SUMO's own statistics (incl. the
+        # never-inserted vehicles that the completed-trip averages above hide).
+        summary.update(self._parse_sumo_statistics())
         return summary
 
     def save_final_summary(self):
