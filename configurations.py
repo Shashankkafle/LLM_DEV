@@ -47,6 +47,47 @@ MOVEMENT_OUTGOING_ROAD = {
 # =============================================================================
 
 INTERSECTION_CONFIGS = {
+    # simulations/single_intersection/net.xml: one TL "TLS", 8 controlled links
+    # (8-character signal states). Link order: 0=NT 1=ST 2=NL 3=SL 4=ET 5=WT
+    # 6=EL 7=WL, so each phase lights exactly two indices.
+    "single_intersection": {
+        "global_settings": {
+            "all_red_state": "rrrrrrrr",
+            "default_green_duration": 30,
+            "yellow_duration": 3,
+            "red_duration": 2,
+        },
+        "phases": {
+            "ETWT": {
+                "id": 0,
+                "green":  "rrrrGGrr",
+                "yellow": "rrrryyrr",
+                "llm_description": "- ETWT: Eastern and western through lanes.",
+            },
+            "NTST": {
+                "id": 1,
+                "green":  "GGrrrrrr",
+                "yellow": "yyrrrrrr",
+                "llm_description": "- NTST: Northern and southern through lanes.",
+            },
+            "ELWL": {
+                "id": 2,
+                "green":  "rrrrrrGG",
+                "yellow": "rrrrrryy",
+                "llm_description": "- ELWL: Eastern and western left-turn lanes.",
+            },
+            "NLSL": {
+                "id": 3,
+                "green":  "rrGGrrrr",
+                "yellow": "rryyrrrr",
+                "llm_description": "- NLSL: Northern and southern left-turn lanes.",
+            },
+        },
+        "movement_directions": MOVEMENT_DIRECTIONS,
+        "movement_types": MOVEMENT_TYPES,
+        "movement_outgoing_road": MOVEMENT_OUTGOING_ROAD,
+    },
+
     # 3 lanes per approach (36-character signal states).
     "three_lane": {
         "global_settings": {
@@ -127,7 +168,9 @@ INTERSECTION_CONFIGS = {
     },
 }
 
-# Config used when no --intersection_config is given. Preserves prior behavior.
+# Config used when no --intersection_config is given. NOTE: this 3-lane config
+# does NOT match simulations/single_intersection (8 links). To run that committed
+# sim, pass: runner.py --intersection_config single_intersection
 DEFAULT_INTERSECTION_CONFIG_NAME = "three_lane"
 
 # Back-compat: modules that `from configurations import INTERSECTION_CONFIG`
@@ -190,7 +233,9 @@ LLM_DEFAULT_PATH = (
 # =============================================================================
 
 DEFAULT_SIMULATION_STEPS = 3600
-DEFAULT_SIMULATION_CONFIG = "simulations/single_intersection/run.sumocfg"
+# Use forward slashes: backslashes would be parsed as escape sequences
+# (e.g. "\4" -> chr(4), "\a" -> bell). Forward slashes work on Windows too.
+DEFAULT_SIMULATION_CONFIG = "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_5816.sumocfg"
 DEFAULT_START_PHASE = "ETWT"
 
 
@@ -218,3 +263,71 @@ PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.json"
 
 REPLAY_EVENTS_FILENAME = "replay_record.jsonl"
 REPLAY_META_FILENAME = "replay_meta.json"
+
+
+# =============================================================================
+# CoLight RL baseline (additive -- does not affect the LLM path)
+#
+# CoLight is a graph-attention DQN lifted verbatim from
+#   github.com/usail-hkust/LLMTSCS @ d5d4180f34edb843e1d1b462d5846c75d6d4533a
+# Hyperparameters below reproduce that repo's utils/config.py exactly. See
+# PORTING_PLAN.md for the full contract; utils/state_features.py for the seam.
+# =============================================================================
+
+# Canonical movement order (source CoLight's list_lane_order). Both the cur_phase
+# one-hot and the lane_num_vehicle 8-vector are indexed by this order, so they are
+# co-indexed.
+COLIGHT_MOVEMENT_ORDER = ["WL", "WT", "EL", "ET", "NL", "NT", "SL", "ST"]
+
+# Per-movement aggregation -> 8 lane features (vs source's literal 12 raw lanes).
+# Read by the lifted agent's _cal_len_feature (defaults to 12 when absent).
+COLIGHT_NUM_LANE_FEATURES = 8
+
+# Top-k nearest neighbours used to build each intersection's adjacency row.
+COLIGHT_TOP_K_ADJACENCY = 5
+
+# One decision per green window; equals PhaseHandler default_green_duration so the
+# RL cadence matches both the source (MIN_ACTION_TIME = MEASURE_TIME = 30) and the LLM.
+COLIGHT_NUM_ROUNDS = 100
+
+# Reward = COEFF * (per-intersection stopped-vehicle count), averaged over the window.
+COLIGHT_REWARD_QUEUE_COEFF = -0.25
+
+# Default training/eval network for the CoLight runner (hangzhou 1x1, two-lane).
+COLIGHT_DEFAULT_SIMULATION_CONFIG = (
+    "dataset/sumo_version/hangzhou_1x1_bc-tyc_18041607_1h/roadnet.sumocfg"
+)
+COLIGHT_DEFAULT_INTERSECTION_CONFIG_NAME = "two_lane_1x1"
+
+# Multi-intersection network for Phase 3 (16 TLs, all 36-link/3-lane, so it reuses the
+# existing `three_lane` config -- verified to match this net's link ordering). Run with:
+#   runner_colight.py --simulation_config <below> --intersection_config three_lane
+COLIGHT_4X4_SIMULATION_CONFIG = (
+    "dataset/sumo_version/hangzhou_4x4_gudang_18041610_1h/roadnet.sumocfg"
+)
+COLIGHT_4X4_INTERSECTION_CONFIG_NAME = "three_lane"
+
+# Subdirectory (under a run's records dir) where .h5 weights are written.
+COLIGHT_WEIGHTS_DIR_NAME = "weights"
+COLIGHT_TRAINING_PROGRESS_FILENAME = "training_progress.jsonl"
+
+# Agent hyperparameters -- reproduced EXACTLY from source utils/config.py
+# (DIC_BASE_AGENT_CONF + the CNN_layers extra from run_colight.py).
+COLIGHT_AGENT_CONF = {
+    "CNN_layers": [[32, 32]],
+    "D_DENSE": 20,
+    "LEARNING_RATE": 0.001,
+    "PATIENCE": 10,
+    "BATCH_SIZE": 20,
+    "EPOCHS": 100,
+    "SAMPLE_SIZE": 3000,
+    "MAX_MEMORY_LEN": 12000,
+    "UPDATE_Q_BAR_FREQ": 5,
+    "UPDATE_Q_BAR_EVERY_C_ROUND": False,
+    "GAMMA": 0.8,
+    "NORMAL_FACTOR": 20,
+    "EPSILON": 0.8,
+    "EPSILON_DECAY": 0.95,
+    "MIN_EPSILON": 0.2,
+    "LOSS_FUNCTION": "mean_squared_error",
+}
