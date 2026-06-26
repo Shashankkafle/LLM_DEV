@@ -40,6 +40,10 @@ class MetricsRecorder:
         # One network-wide stopped-vehicle count per step (snapshot, time-averaged later).
         self.queue_lengths = []
 
+        # Sim time at the most recent recorded step. Used to charge vehicles
+        # still in the network their time-so-far when the horizon cuts them off.
+        self.last_sim_time = 0.0
+
         # Decision-outcome counters. Every decision point is exactly one type;
         # see record_decision for the three-way classification.
         self.total_decisions = 0            # all decision points, every type
@@ -68,6 +72,7 @@ class MetricsRecorder:
     def record_step_summary(self, step):
         current_time = traci.simulation.getTime()
         step_length = traci.simulation.getDeltaT()
+        self.last_sim_time = current_time
 
         # Track vehicles entering the simulation this step.
         self.loaded_ids.update(traci.simulation.getLoadedIDList())
@@ -152,6 +157,38 @@ class MetricsRecorder:
 
         return out
 
+    def _cityflow_style_averages(self):
+        """Travel/wait averages that also count vehicles still in the network at
+        the horizon, charging each its time-so-far (last_sim_time - depart).
+
+        This mirrors CityFlow, which averages over in-flight vehicles too, so a
+        hard simulation horizon doesn't silently drop the vehicles that depart
+        too late to finish (~16% here). Vehicles that never got inserted are
+        still excluded -- they have no in-network time -- and are reported
+        separately as loaded_but_never_departed / sumo_vehicles_not_inserted.
+        """
+        still_running = self.departed_ids - self.arrived_ids
+        count = len(self.completed_trips) + len(still_running)
+        if count == 0:
+            return {
+                "cityflow_style_vehicle_count": 0,
+                "cityflow_style_att_s": None,
+                "cityflow_style_awt_s": None,
+            }
+        total_travel = sum(t["travel_time"] for t in self.completed_trips.values())
+        total_waiting = sum(t["waiting_time"] for t in self.completed_trips.values())
+        for veh in still_running:
+            depart = self.depart_times.get(veh)
+            if depart is None:
+                continue  # shouldn't happen: departed vehicles always have a time
+            total_travel += self.last_sim_time - depart
+            total_waiting += self.waiting_accumulated.get(veh, 0.0)
+        return {
+            "cityflow_style_vehicle_count": count,
+            "cityflow_style_att_s": round(total_travel / count, 2),
+            "cityflow_style_awt_s": round(total_waiting / count, 2),
+        }
+
     def get_final_summary(self):
         """
         Returns overall episode-level metrics after the simulation ends.
@@ -198,6 +235,10 @@ class MetricsRecorder:
         summary["hallucination_rate"] = (
             round(self.total_hallucinations / llm_queried, 4) if llm_queried > 0 else None
         )
+
+        # CityFlow-style averages that also count vehicles still in the network
+        # at the horizon, so late departures are not silently dropped.
+        summary.update(self._cityflow_style_averages())
 
         # Population-faithful metrics from SUMO's own statistics (incl. the
         # never-inserted vehicles that the completed-trip averages above hide).
