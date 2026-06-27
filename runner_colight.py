@@ -19,6 +19,8 @@ os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 import argparse
 import json
 import random
+import subprocess
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
@@ -44,6 +46,7 @@ from configurations import (
     COLIGHT_DEFAULT_INTERSECTION_CONFIG_NAME,
     COLIGHT_WEIGHTS_DIR_NAME,
     COLIGHT_TRAINING_PROGRESS_FILENAME,
+    COLIGHT_MODEL_METADATA_FILENAME,
 )
 # Importing the agent activates legacy Keras + the unsafe-deserialization toggle.
 from models_inference.RL.colight_agent import CoLightAgent
@@ -75,6 +78,89 @@ def build_agent_confs(conf, num_agents, weights_dir):
     dic_agent_conf = dict(COLIGHT_AGENT_CONF)
     dic_path = {"PATH_TO_MODEL": str(weights_dir)}
     return dic_traffic_env_conf, dic_agent_conf, dic_path, phase_map
+
+
+def _git_commit():
+    """Current repo commit hash for reproducibility, or None if unavailable."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _sumocfg_inputs(simulation_config):
+    """Pull the net-file and route-files a .sumocfg points at.
+
+    These are the road *network* and the *traffic flow* (vehicle demand) the model
+    is trained against. Returns {} if the config can't be read or parsed.
+    """
+    try:
+        root = ET.parse(simulation_config).getroot()
+        inputs = {}
+        net = root.find("./input/net-file")
+        routes = root.find("./input/route-files")
+        if net is not None:
+            inputs["net_file"] = net.get("value")
+        if routes is not None:
+            inputs["route_files"] = routes.get("value")
+        return inputs
+    except Exception:
+        return {}
+
+
+def build_training_metadata(args, order, agent_conf):
+    """Assemble a reproducibility record describing how these weights were trained.
+
+    Captures the seeds, the road network + traffic flow, and the training/agent
+    hyperparameters so any saved model can be traced back to the setup that
+    produced it. Written once per run as a sidecar next to the .h5 weights.
+    """
+    effective_epochs = args.epochs if args.epochs is not None else COLIGHT_AGENT_CONF["EPOCHS"]
+    return {
+        "controller": "CoLight",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "git_commit": _git_commit(),
+        "seed": args.seed,
+        "seeded_rngs": ["random", "numpy", "tensorflow"],
+        "network": {
+            "intersection_config": args.intersection_config,
+            "num_intersections": len(order),
+            "intersection_ids": list(order),
+            "simulation_config": args.simulation_config,
+            **_sumocfg_inputs(args.simulation_config),
+        },
+        "training": {
+            "mode": args.mode,
+            "num_rounds": args.num_rounds,
+            "simulation_steps": args.simulation_steps,
+            "epochs": effective_epochs,
+            "ablate_attention": args.ablate_attention,
+            "reward_queue_coeff": COLIGHT_REWARD_QUEUE_COEFF,
+            "top_k_adjacency": COLIGHT_TOP_K_ADJACENCY,
+            "num_lane_features": COLIGHT_NUM_LANE_FEATURES,
+        },
+        "agent_conf": dict(agent_conf),
+        "weights": {
+            "filename_pattern": "round_{round}_inter_0.h5",
+            # Grows as each round's .h5 is actually written (see train()), so this
+            # always reflects the checkpoints on disk -- even if the run crashes.
+            # training.num_rounds above records the planned total.
+            "rounds_saved": [],
+        },
+    }
+
+
+def load_training_metadata(weights_dir):
+    """Read a weights dir's training_metadata.json, or None if absent/unreadable."""
+    path = Path(weights_dir) / COLIGHT_MODEL_METADATA_FILENAME
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
 
 
 def run_episode(env, conf, agent, phase_map, order, replay, recorder,
@@ -188,6 +274,8 @@ def train(args, conf, records_dir):
     phase_map = None
     memory = None  # {intersection_id: [transition, ...]} accumulated across rounds
     order = None
+    metadata = None       # reproducibility sidecar, written/updated as rounds save
+    metadata_path = None
     max_memory = COLIGHT_AGENT_CONF["MAX_MEMORY_LEN"]
     sample_size = COLIGHT_AGENT_CONF["SAMPLE_SIZE"]
     epsilon_init = COLIGHT_AGENT_CONF["EPSILON"]
@@ -209,6 +297,17 @@ def train(args, conf, records_dir):
             agent = CoLightAgent(dic_agent_conf=dac, dic_traffic_env_conf=dtec,
                                  dic_path=dpath, cnt_round=0, intersection_id="0")
             memory = {inter_id: [] for inter_id in order}
+
+            # Record how this model is being trained (seeds, network, traffic
+            # flow, hyperparameters) up front, so even a run that crashes before
+            # round 0 finishes leaves a sidecar of its setup. rounds_saved starts
+            # empty and is filled in below as each .h5 is actually written. dac is
+            # still the initial config here -- before the per-round epsilon decay.
+            metadata = build_training_metadata(args, order, dac)
+            metadata_path = weights_dir / COLIGHT_MODEL_METADATA_FILENAME
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=4)
+            print(f"[colight] wrote training metadata -> {metadata_path}")
 
         # Epsilon decay per round (the source applies this in the agent constructor).
         agent.dic_agent_conf["EPSILON"] = max(epsilon_init * (epsilon_decay ** r), min_epsilon)
@@ -242,6 +341,13 @@ def train(args, conf, records_dir):
             agent.q_network_bar = agent.build_network_from_copy(agent.q_network)
 
         agent.save_network(f"round_{r}_inter_0")
+
+        # Mark this round's checkpoint as saved and rewrite the sidecar, so
+        # rounds_saved always matches the .h5 files on disk (the file is tiny;
+        # the rewrite cost is negligible next to a full episode + train step).
+        metadata["weights"]["rounds_saved"].append(r)
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=4)
 
         epsilon = agent.dic_agent_conf["EPSILON"]
         print(f"[round {r}] total_reward={total_reward:.2f} "
@@ -277,6 +383,25 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round):
     agent.load_network(f"round_{eval_round}_inter_0", file_path=str(weights_dir))
     agent.dic_agent_conf["EPSILON"] = 0.0  # greedy
 
+    # Report (and sanity-check) what the loaded model was trained on, so an eval
+    # on a different network/flow than training doesn't pass by silently.
+    trained_on = load_training_metadata(weights_dir)
+    if trained_on is not None:
+        trained_net = trained_on.get("network", {})
+        print(f"[eval] model trained on intersection_config="
+              f"{trained_net.get('intersection_config')} "
+              f"simulation_config={trained_net.get('simulation_config')} "
+              f"seed={trained_on.get('seed')}")
+        if trained_net.get("intersection_config") != args.intersection_config:
+            print(f"[eval] WARNING: evaluating intersection_config={args.intersection_config} "
+                  f"but model was trained on {trained_net.get('intersection_config')}")
+        if trained_net.get("simulation_config") != args.simulation_config:
+            print(f"[eval] WARNING: evaluating simulation_config={args.simulation_config} "
+                  f"but model was trained on {trained_net.get('simulation_config')}")
+    else:
+        print(f"[eval] no training metadata found in {weights_dir} "
+              f"(model predates metadata logging)")
+
     recorder = MetricsRecorder(run_dir=records_dir, verbose=False,
                                phase_names=list(conf["phases"].keys()))
     replay = ReplayRecorder(record_dir=records_dir, meta={
@@ -286,6 +411,7 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round):
         "simulation_steps": args.simulation_steps,
         "simulation_config": args.simulation_config,
         "intersection_config": args.intersection_config,
+        "training_metadata": trained_on,
     })
 
     run_episode(env, conf, agent, phase_map, order,

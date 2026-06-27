@@ -337,6 +337,9 @@ COLIGHT_4X4_INTERSECTION_CONFIG_NAME = "three_lane"
 # Subdirectory (under a run's records dir) where .h5 weights are written.
 COLIGHT_WEIGHTS_DIR_NAME = "weights"
 COLIGHT_TRAINING_PROGRESS_FILENAME = "training_progress.jsonl"
+# Sidecar (written next to the .h5 weights) recording how the model was trained:
+# seeds, the road network + traffic flow, and the training/agent hyperparameters.
+COLIGHT_MODEL_METADATA_FILENAME = "training_metadata.json"
 
 # Agent hyperparameters -- reproduced EXACTLY from source utils/config.py
 # (DIC_BASE_AGENT_CONF + the CNN_layers extra from run_colight.py).
