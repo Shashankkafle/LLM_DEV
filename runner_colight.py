@@ -27,6 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from sumo_env import SumoEnv
+from utils.tf_device import configure_tf_devices
 from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
@@ -458,6 +459,10 @@ def main(args):
         tf.random.set_seed(args.seed)
     except Exception:
         pass
+
+    # Use a GPU automatically if this machine has one; log CPU vs GPU either way.
+    # Must run before train()/evaluate() build the agent's model.
+    configure_tf_devices()
 
     conf = INTERSECTION_CONFIGS[args.intersection_config]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
