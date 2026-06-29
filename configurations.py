@@ -361,3 +361,17 @@ COLIGHT_AGENT_CONF = {
     "MIN_EPSILON": 0.2,
     "LOSS_FUNCTION": "mean_squared_error",
 }
+
+# Feature sets per variant (mirrors source LIST_STATE_FEATURE). adjacency_matrix MUST
+# stay last (the agent drops it with LIST_STATE_FEATURE[:-1]).
+COLIGHT_FEATURES = ["cur_phase", "lane_num_vehicle", "adjacency_matrix"]
+
+# Advanced CoLight: SAME CoLightAgent, different features (source run_advanced_colight.py).
+ADVANCED_COLIGHT_FEATURES = [
+    "cur_phase",
+    "traffic_movement_pressure_queue_efficient",
+    "lane_enter_running_part",
+    "adjacency_matrix",
+]
+# Source uses the same base agent conf for Advanced CoLight; copy so it can diverge later.
+ADVANCED_COLIGHT_AGENT_CONF = dict(COLIGHT_AGENT_CONF)

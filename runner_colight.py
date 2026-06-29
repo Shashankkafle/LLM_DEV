@@ -39,6 +39,9 @@ from configurations import (
     LOGS_DIR_NAME,
     PHASE_SEQUENCES_DIR_NAME,
     COLIGHT_AGENT_CONF,
+    COLIGHT_FEATURES,
+    ADVANCED_COLIGHT_AGENT_CONF,
+    ADVANCED_COLIGHT_FEATURES,
     COLIGHT_NUM_ROUNDS,
     COLIGHT_TOP_K_ADJACENCY,
     COLIGHT_NUM_LANE_FEATURES,
@@ -53,9 +56,13 @@ from configurations import (
 from models_inference.RL.colight_agent import CoLightAgent
 
 
-# CoLight's state features, in source order (adjacency_matrix MUST stay last:
-# the agent drops it with LIST_STATE_FEATURE[:-1] when building the feature vector).
-FEATURES = ["cur_phase", "lane_num_vehicle", "adjacency_matrix"]
+# Each variant = (feature list, agent conf). Both use the SAME lifted CoLightAgent;
+# only the features differ. adjacency_matrix MUST stay last (the agent drops it with
+# LIST_STATE_FEATURE[:-1] when building the feature vector).
+VARIANTS = {
+    "colight": (COLIGHT_FEATURES, COLIGHT_AGENT_CONF),
+    "advanced_colight": (ADVANCED_COLIGHT_FEATURES, ADVANCED_COLIGHT_AGENT_CONF),
+}
 
 
 class _NullReplayRecorder:
@@ -65,7 +72,7 @@ class _NullReplayRecorder:
         pass
 
 
-def build_agent_confs(conf, num_agents, weights_dir):
+def build_agent_confs(conf, num_agents, weights_dir, features, agent_conf):
     """Assemble the three dicts the lifted CoLightAgent expects from our config."""
     phase_map = sf.build_phase_onehot(conf)
     dic_traffic_env_conf = {
@@ -74,9 +81,9 @@ def build_agent_confs(conf, num_agents, weights_dir):
         "PHASE": phase_map,
         "BINARY_PHASE_EXPANSION": True,
         "NUM_LANE_FEATURES": COLIGHT_NUM_LANE_FEATURES,
-        "LIST_STATE_FEATURE": FEATURES,
+        "LIST_STATE_FEATURE": features,
     }
-    dic_agent_conf = dict(COLIGHT_AGENT_CONF)
+    dic_agent_conf = dict(agent_conf)
     dic_path = {"PATH_TO_MODEL": str(weights_dir)}
     return dic_traffic_env_conf, dic_agent_conf, dic_path, phase_map
 
@@ -120,9 +127,9 @@ def build_training_metadata(args, order, agent_conf):
     hyperparameters so any saved model can be traced back to the setup that
     produced it. Written once per run as a sidecar next to the .h5 weights.
     """
-    effective_epochs = args.epochs if args.epochs is not None else COLIGHT_AGENT_CONF["EPOCHS"]
+    effective_epochs = args.epochs if args.epochs is not None else agent_conf["EPOCHS"]
     return {
-        "controller": "CoLight",
+        "controller": args.variant,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "git_commit": _git_commit(),
         "seed": args.seed,
@@ -164,7 +171,7 @@ def load_training_metadata(weights_dir):
         return None
 
 
-def run_episode(env, conf, agent, phase_map, order, replay, recorder,
+def run_episode(env, conf, agent, phase_map, order, features, replay, recorder,
                 simulation_steps, reward_coeff, collect, ablate_attention=False):
     """Drive one episode with round-synchronized decisions.
 
@@ -212,7 +219,7 @@ def run_episode(env, conf, agent, phase_map, order, replay, recorder,
 
         # Decision round: every intersection has finished its green window.
         if all(handlers[inter_id].switch_phase for inter_id in order):
-            live_states = [sf.build_state(env, inter_id, FEATURES) for inter_id in order]
+            live_states = [sf.build_state(env, inter_id, features) for inter_id in order]
 
             # Finalize the previous round's transitions (reward = avg queue over window).
             if prev is not None and collect:
@@ -244,11 +251,15 @@ def run_episode(env, conf, agent, phase_map, order, replay, recorder,
     if collect and prev is not None and window_steps > 0:
         prev_states, prev_actions, prev_step = prev
         for k, inter_id in enumerate(order):
-            terminal_next = {
-                "cur_phase": [conf["phases"][handlers[inter_id].current_phase]["id"]],
-                "lane_num_vehicle": sf.FEATURE_REGISTRY["lane_num_vehicle"](env, inter_id),
-                "adjacency_matrix": sf.FEATURE_REGISTRY["adjacency_matrix"](env, inter_id),
-            }
+            # Build the terminal next_state from the variant's features. cur_phase comes
+            # from the handler's logical phase (terminal RYG may be mid-transition); all
+            # other features are read live from the env.
+            terminal_next = {}
+            for feat in features:
+                if feat == "cur_phase":
+                    terminal_next["cur_phase"] = [conf["phases"][handlers[inter_id].current_phase]["id"]]
+                else:
+                    terminal_next[feat] = sf.FEATURE_REGISTRY[feat](env, inter_id)
             reward = reward_coeff * (window_queue[inter_id] / window_steps)
             total_reward += reward
             transitions[inter_id].append((
@@ -266,7 +277,7 @@ def agent_start_phase(conf):
     return DEFAULT_START_PHASE if DEFAULT_START_PHASE in conf["phases"] else next(iter(conf["phases"]))
 
 
-def train(args, conf, records_dir):
+def train(args, conf, records_dir, features, agent_conf):
     weights_dir = records_dir / COLIGHT_WEIGHTS_DIR_NAME
     weights_dir.mkdir(parents=True, exist_ok=True)
     progress_path = records_dir / COLIGHT_TRAINING_PROGRESS_FILENAME
@@ -277,22 +288,23 @@ def train(args, conf, records_dir):
     order = None
     metadata = None       # reproducibility sidecar, written/updated as rounds save
     metadata_path = None
-    max_memory = COLIGHT_AGENT_CONF["MAX_MEMORY_LEN"]
-    sample_size = COLIGHT_AGENT_CONF["SAMPLE_SIZE"]
-    epsilon_init = COLIGHT_AGENT_CONF["EPSILON"]
-    epsilon_decay = COLIGHT_AGENT_CONF["EPSILON_DECAY"]
-    min_epsilon = COLIGHT_AGENT_CONF["MIN_EPSILON"]
-    update_q_bar_freq = COLIGHT_AGENT_CONF["UPDATE_Q_BAR_FREQ"]
+    max_memory = agent_conf["MAX_MEMORY_LEN"]
+    sample_size = agent_conf["SAMPLE_SIZE"]
+    epsilon_init = agent_conf["EPSILON"]
+    epsilon_decay = agent_conf["EPSILON_DECAY"]
+    min_epsilon = agent_conf["MIN_EPSILON"]
+    update_q_bar_freq = agent_conf["UPDATE_Q_BAR_FREQ"]
 
     for r in range(args.num_rounds):
-        print(f"\n========== CoLight training round {r}/{args.num_rounds - 1} ==========")
+        print(f"\n========== {args.variant} training round {r}/{args.num_rounds - 1} ==========")
         env = SumoEnv(sumo_config=args.simulation_config, use_gui=args.use_gui,
                       intersection_config=conf)
         env.start_simulation()
         order = sorted(env.get_intersections())
 
         if agent is None:
-            dtec, dac, dpath, phase_map = build_agent_confs(conf, len(order), weights_dir)
+            dtec, dac, dpath, phase_map = build_agent_confs(conf, len(order), weights_dir,
+                                                            features, agent_conf)
             if args.epochs is not None:
                 dac["EPOCHS"] = args.epochs
             agent = CoLightAgent(dic_agent_conf=dac, dic_traffic_env_conf=dtec,
@@ -314,7 +326,7 @@ def train(args, conf, records_dir):
         agent.dic_agent_conf["EPSILON"] = max(epsilon_init * (epsilon_decay ** r), min_epsilon)
 
         transitions, total_reward = run_episode(
-            env, conf, agent, phase_map, order,
+            env, conf, agent, phase_map, order, features,
             replay=_NullReplayRecorder(), recorder=None,
             simulation_steps=args.simulation_steps,
             reward_coeff=COLIGHT_REWARD_QUEUE_COEFF, collect=True,
@@ -365,7 +377,7 @@ def train(args, conf, records_dir):
     return weights_dir
 
 
-def evaluate(args, conf, records_dir, weights_dir, eval_round):
+def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_conf):
     phase_sequence_dir = records_dir / PHASE_SEQUENCES_DIR_NAME
     phase_sequence_dir.mkdir(parents=True, exist_ok=True)
 
@@ -375,7 +387,8 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round):
     env.start_simulation()
     order = sorted(env.get_intersections())
 
-    dtec, dac, dpath, phase_map = build_agent_confs(conf, len(order), weights_dir)
+    dtec, dac, dpath, phase_map = build_agent_confs(conf, len(order), weights_dir,
+                                                    features, agent_conf)
     dac = dict(dac)
     dac["EPSILON"] = 0.0
     dac["MIN_EPSILON"] = 0.0
@@ -406,7 +419,7 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round):
     recorder = MetricsRecorder(run_dir=records_dir, verbose=False,
                                phase_names=list(conf["phases"].keys()))
     replay = ReplayRecorder(record_dir=records_dir, meta={
-        "controller": "CoLight",
+        "controller": args.variant,
         "mode": "eval",
         "eval_round": eval_round,
         "simulation_steps": args.simulation_steps,
@@ -415,7 +428,7 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round):
         "training_metadata": trained_on,
     })
 
-    run_episode(env, conf, agent, phase_map, order,
+    run_episode(env, conf, agent, phase_map, order, features,
                 replay=replay, recorder=recorder,
                 simulation_steps=args.simulation_steps,
                 reward_coeff=COLIGHT_REWARD_QUEUE_COEFF, collect=False,
@@ -430,6 +443,10 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--test_name", type=str, default="colight")
+    parser.add_argument("--variant", type=str, default="colight",
+                        choices=list(VARIANTS.keys()),
+                        help="colight (lane_num_vehicle) or advanced_colight "
+                             "(efficient pressure + near-stopline running).")
     parser.add_argument("--mode", type=str, default="train_eval",
                         choices=["train", "eval", "train_eval"])
     parser.add_argument("--num_rounds", type=int, default=COLIGHT_NUM_ROUNDS)
@@ -465,13 +482,14 @@ def main(args):
     configure_tf_devices()
 
     conf = INTERSECTION_CONFIGS[args.intersection_config]
+    features, agent_conf = VARIANTS[args.variant]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     records_dir = Path(LOGS_DIR_NAME) / f"{args.test_name}_{timestamp}"
     records_dir.mkdir(parents=True, exist_ok=True)
 
     weights_dir = None
     if args.mode in ("train", "train_eval"):
-        weights_dir = train(args, conf, records_dir)
+        weights_dir = train(args, conf, records_dir, features, agent_conf)
 
     if args.mode in ("eval", "train_eval"):
         if weights_dir is None:
@@ -479,8 +497,8 @@ def main(args):
                 raise ValueError("--mode eval requires --weights_dir")
             weights_dir = Path(args.weights_dir)
         eval_round = args.eval_round if args.eval_round >= 0 else args.num_rounds - 1
-        summary = evaluate(args, conf, records_dir, weights_dir, eval_round)
-        print("\nCoLight eval final summary:", json.dumps(summary, indent=2))
+        summary = evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_conf)
+        print(f"\n{args.variant} eval final summary:", json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
