@@ -6,6 +6,7 @@ from configurations import (
     STOP_SPEED_EARLY_QUEUE,
     LANE_SEGMENT_COUNT,
     PHASE_SEQUENCE_FILENAME_SUFFIX,
+    sumo_metrics_args,
 )
 from utils.general_utils import append_to_json_file, get_phase_name
 approaches = ["North", "South", "East", "West"]
@@ -17,7 +18,7 @@ movement_to_approach = {
 }
 class SumoEnv:
     def __init__(self, sumo_config, phase_sequence_dir=None, use_gui=False,
-                 intersection_config=INTERSECTION_CONFIG):
+                 intersection_config=INTERSECTION_CONFIG, output_dir=None):
         self.sumo_config = sumo_config
         self.use_gui = use_gui
         self.intersection_config = intersection_config
@@ -28,6 +29,11 @@ class SumoEnv:
         else:
             sumo_binary = SUMO_BINARY
         self.cmd = [sumo_binary, "-c", self.sumo_config]
+        # When an output dir is given, disable teleport and emit
+        # tripinfo/queue/statistics so cal_offline can report honest,
+        # cross-controller-comparable metrics. SUMO flushes these on close.
+        if output_dir is not None:
+            self.cmd += sumo_metrics_args(output_dir)
 
     def _build_approach_mapping(self):
         mapping = {j: {} for j in traci.trafficlight.getIDList()}

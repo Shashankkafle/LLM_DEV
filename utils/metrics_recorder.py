@@ -124,6 +124,12 @@ class MetricsRecorder:
         summary["total_departed_vehicles"] = total_departed
         summary["loaded_but_never_departed"] = max(total_loaded - total_departed, 0)
         summary["still_running_at_end"] = max(total_departed - total_arrived, 0)
+        # Fraction of loaded vehicles that actually finished their trip. A low
+        # rate means the completed-only ATT/AWT above are optimistic (they drop
+        # the worst-off, still-stuck vehicles) -- report it alongside them.
+        summary["completion_rate"] = (
+            round(total_arrived / total_loaded, 4) if total_loaded else None
+        )
 
         # Decision-outcome breakdown. "LLM-queried" excludes empty-intersection
         # no-ops, so the rates below describe only the steps where a decision was

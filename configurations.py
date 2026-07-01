@@ -5,6 +5,8 @@ intersection configs. It imports nothing from the rest of the project, so any
 module can import from it without risking a circular import.
 """
 
+from pathlib import Path
+
 # =============================================================================
 # Direction / movement reference maps
 # =============================================================================
@@ -218,3 +220,36 @@ PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.json"
 
 REPLAY_EVENTS_FILENAME = "replay_record.jsonl"
 REPLAY_META_FILENAME = "replay_meta.json"
+
+# SUMO writes these on close when the flags from sumo_metrics_args are passed.
+# They feed the offline metric parser (utils/cal_offline.py).
+SUMO_TRIPINFO_FILENAME = "tripinfo.xml"
+SUMO_QUEUE_FILENAME = "queue_output.xml"
+SUMO_STATISTIC_FILENAME = "sumo_statistics.xml"
+
+
+def sumo_metrics_args(output_dir):
+    """SUMO CLI flags for honest, cross-controller-comparable measurement.
+
+    Two jobs, bundled so every launcher stays in sync:
+
+    1. Gridlock-honest behavior. ``--time-to-teleport -1`` disables SUMO's
+       default 300 s teleport, so vehicles stuck in a jam are NOT silently
+       removed -- which would understate congestion. This DOES change the
+       simulation (unlike a pure output flag); it is the point of a fair
+       congestion measurement.
+    2. Offline-metric output. tripinfo (with unfinished vehicles written too, so
+       late departures are charged to the horizon rather than dropped), per-lane
+       queue length in metres, and SUMO's own aggregate statistics file. These
+       are parsed by utils/cal_offline.py into ATT/AWT/AQL.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return [
+        "--time-to-teleport", "-1",
+        "--tripinfo-output", str(output_dir / SUMO_TRIPINFO_FILENAME),
+        "--tripinfo-output.write-unfinished",
+        "--queue-output", str(output_dir / SUMO_QUEUE_FILENAME),
+        "--statistic-output", str(output_dir / SUMO_STATISTIC_FILENAME),
+        "--duration-log.statistics", "true",
+    ]
