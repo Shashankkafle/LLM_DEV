@@ -17,6 +17,7 @@ from configurations import (
     PHASE_SEQUENCES_DIR_NAME,
 )
 from utils.metrics_recorder import MetricsRecorder
+from utils.cal_offline import cal_offline
 import time
 import re
 import argparse
@@ -51,20 +52,41 @@ def parse_llm_signal(raw_text):
     return None
 
 
-def state_is_empty(state_dict):
-    """True when no vehicles are present on any controlled lane of the intersection.
+# Tokens a model may return to mean "no phase change is needed" rather than
+# naming one of the four phases. LightGPT-style models emit e.g.
+# <signal>None</signal> when the intersection they see is empty. This is a
+# deliberate "hold the current phase" decision, NOT a hallucination.
+NO_ACTION_SIGNALS = {"NONE", "NULL", "NO_ACTION", "NO_CHANGE", "NOCHANGE", "KEEP", "HOLD", "STAY"}
 
-    Uses the per-lane counts (``lane_states``) so each lane is counted once. An
-    empty intersection has no decision to make, so keeping the current phase is
-    the correct, deliberate action -- not a parse failure. We detect this from
-    the state we already have, rather than asking the LLM to recognise "zero".
+
+def is_no_action_signal(extracted_signal):
+    """True if the model explicitly declared that no phase change is needed."""
+    if extracted_signal is None:
+        return False
+    token = extracted_signal.strip().upper().replace(" ", "_").replace("-", "_")
+    return token in NO_ACTION_SIGNALS
+
+
+def state_is_empty(state_dict):
+    """True when no vehicles are present on the phase-controlled lanes.
+
+    Bases emptiness on ``movement_states`` -- the exact lanes that feed the LLM
+    prompt -- so "empty" means the model would see an all-zero state. (The
+    always-green right-turn lanes are deliberately excluded: they are not part of
+    any phase and never appear in the prompt, so cars there are irrelevant to the
+    phase decision.) An empty intersection has no decision to make, so holding the
+    current phase is the correct, deliberate action -- not a parse failure -- and
+    we detect it from the state we already have rather than spending an LLM call.
     """
-    lane_states = state_dict.get("lane_states", {})
-    for lane in lane_states.values():
-        if lane.get("early_queued", 0) > 0:
-            return False
-        if any(count > 0 for count in lane.get("segments", {}).values()):
-            return False
+    movement_states = state_dict.get("movement_states", {})
+    for phase_directions in movement_states.values():
+        for direction in phase_directions.values():
+            if not isinstance(direction, dict):
+                continue
+            if direction.get("early_queued", 0) > 0:
+                return False
+            if any(count > 0 for count in direction.get("segments", {}).values()):
+                return False
     return True
 
 def mock_llm_inference(prompt, conf):
@@ -148,6 +170,12 @@ def main(args):
                     if extracted_signal in conf["phases"]:
                         decision_type = "llm_decision"
                         next_phase = extracted_signal
+                    elif is_no_action_signal(extracted_signal):
+                        # Model explicitly judged no phase change is needed
+                        # (e.g. <signal>None</signal>). Hold the current phase;
+                        # this is a valid decision, not a failure.
+                        decision_type = "llm_no_action"
+                        next_phase = previous_phase
                     else:
                         # Non-empty intersection but the model gave no usable answer
                         # (truncated / no tag) or named an invalid phase. Hold the

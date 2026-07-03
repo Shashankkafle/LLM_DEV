@@ -7,6 +7,7 @@ from configurations import (
     LANE_SEGMENT_COUNT,
     PHASE_SEQUENCE_FILENAME_SUFFIX,
     sumo_statistics_args,
+    sumo_metrics_args,
 )
 from utils.general_utils import append_to_json_file, get_phase_name
 approaches = ["North", "South", "East", "West"]
@@ -29,10 +30,11 @@ class SumoEnv:
         else:
             sumo_binary = SUMO_BINARY
         self.cmd = [sumo_binary, "-c", self.sumo_config]
-        # When an output dir is given, have SUMO emit trip statistics there so
-        # MetricsRecorder can report population-faithful, comparable metrics.
+        # When an output dir is given, disable teleport and emit
+        # tripinfo/queue/statistics so cal_offline can report honest,
+        # cross-controller-comparable metrics. SUMO flushes these on close.
         if output_dir is not None:
-            self.cmd += sumo_statistics_args(output_dir)
+            self.cmd += sumo_metrics_args(output_dir)
 
     def _build_approach_mapping(self):
         mapping = {j: {} for j in traci.trafficlight.getIDList()}
