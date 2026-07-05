@@ -178,6 +178,7 @@ def main(args):
                 handler.step()
                 if handler.switch_phase:
                     next_phase = controller.choose(intersection_id, handler)
+                    recorder.record_decision_wait()
                     handler.activate_phase(next_phase)
 
             if traci.simulation.getMinExpectedNumber() <= 0:

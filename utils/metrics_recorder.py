@@ -37,6 +37,7 @@ class MetricsRecorder:
         self.departed_ids = set()
         self.arrived_ids = set()
 
+        self.decision_wait_averages = []  # list of average waiting times(sum (seconds since current stop began per vehicle)/number of vehicles) at each decision point, for later averaging, counts consiquitive wait times
         # One network-wide stopped-vehicle count per step (snapshot, time-averaged later).
         self.queue_lengths = []
 
@@ -213,6 +214,12 @@ class MetricsRecorder:
         summary["total_departed_vehicles"] = total_departed
         summary["loaded_but_never_departed"] = max(total_loaded - total_departed, 0)
         summary["still_running_at_end"] = max(total_departed - total_arrived, 0)
+        print(f"decision_wait_averages: {self.decision_wait_averages}")
+        average_per_decision_wait_s = (
+            round(sum(self.decision_wait_averages) / len(self.decision_wait_averages), 2)
+            if len(self.decision_wait_averages) > 0 else 0
+        )
+        summary["average_per_decision_wait_s"] = average_per_decision_wait_s
         # Fraction of loaded vehicles that actually finished their trip. A low
         # rate means the completed-only ATT/AWT above are optimistic (they drop
         # the worst-off, still-stuck vehicles) -- report it alongside them.
@@ -267,6 +274,27 @@ class MetricsRecorder:
         print(f"  Saved to: {out_path}")
         return summary
 
+    def record_decision_wait(self):
+        """Sample the network-wide mean waiting time at a decision point.
+
+        Matches CityFlow's AWT: getWaitingTime (seconds since the current stop
+        began, resets on movement), averaged over only the vehicles currently
+        stopped (wait > 0), 0.0 when none are. Called per decision so
+        save_final_summary can average across decision points.
+        """
+        halted_waits = [
+            w for w in (
+                traci.vehicle.getWaitingTime(v) for v in traci.vehicle.getIDList()
+            )
+            if w > 0
+        ]
+        average_wait = (
+            sum(halted_waits) / len(halted_waits) if halted_waits else 0.0
+        )
+        if self.verbose:
+            print(f"average waiting time at decision point: {average_wait:.2f}s")
+        self.decision_wait_averages.append(average_wait)
+
     def record_decision(self, step, state_dict, prompt, llm_output,
                         previous_phase, final_phase, decision_type,
                         latency_ms, extracted_signal, intersection_id):
@@ -298,6 +326,9 @@ class MetricsRecorder:
             else:
                 self.total_hallucinations += 1  # tag present but not a valid phase
             parsing_valid = False
+
+        print(f"\n--- Decision @ Step {step} ---")
+        self.record_decision_wait()
 
         decision_event = {
             "step": step,
