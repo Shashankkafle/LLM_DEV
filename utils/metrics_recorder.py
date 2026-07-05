@@ -32,6 +32,13 @@ class MetricsRecorder:
         self.waiting_accumulated = {}  # veh -> total seconds spent stopped so far
         self.completed_trips = {}      # veh -> {"travel_time", "waiting_time"} once it arrives
 
+        # CityFlow-clock ATT: LLMTSCS times only the dwell on intersection
+        # approach lanes, so junction crossings and the final route edge (the
+        # boundary exit, ~70 s free-flow here) are never counted. Accumulate
+        # the same quantity for a like-for-like comparison with its tables.
+        self.final_edges = {}    # veh -> last edge of its route
+        self.approach_time = {}  # veh -> seconds spent on non-final, non-internal edges
+
         # Cumulative id sets, so we can report loaded vs departed vs arrived.
         self.loaded_ids = set()
         self.departed_ids = set()
@@ -81,6 +88,7 @@ class MetricsRecorder:
         for vehicle in traci.simulation.getDepartedIDList():
             self.departed_ids.add(vehicle)
             self.depart_times[vehicle] = current_time
+            self.final_edges[vehicle] = traci.vehicle.getRoute(vehicle)[-1]
 
         # Accumulate true waiting time and count the current network-wide queue.
         current_queue_length = 0
@@ -89,6 +97,11 @@ class MetricsRecorder:
                 current_queue_length += 1
                 self.waiting_accumulated[vehicle] = (
                     self.waiting_accumulated.get(vehicle, 0.0) + step_length
+                )
+            road = traci.vehicle.getRoadID(vehicle)
+            if not road.startswith(":") and road != self.final_edges.get(vehicle):
+                self.approach_time[vehicle] = (
+                    self.approach_time.get(vehicle, 0.0) + step_length
                 )
         self.queue_lengths.append(current_queue_length)
 
@@ -256,6 +269,16 @@ class MetricsRecorder:
         # CityFlow-style averages that also count vehicles still in the network
         # at the horizon, so late departures are not silently dropped.
         summary.update(self._cityflow_style_averages())
+
+        # Same population, but with LLMTSCS's clock (approach dwell only) --
+        # the number directly comparable to the LLMTSCS/paper ATT tables.
+        summary["cityflow_clock_att_s"] = (
+            round(
+                sum(self.approach_time.get(v, 0.0) for v in self.departed_ids)
+                / len(self.departed_ids), 2
+            )
+            if self.departed_ids else None
+        )
 
         # Population-faithful metrics from SUMO's own statistics (incl. the
         # never-inserted vehicles that the completed-trip averages above hide).
