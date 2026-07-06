@@ -4,7 +4,6 @@ from configurations import (
     SUMO_BINARY,
     SUMO_GUI_BINARY,
     STOP_SPEED_EARLY_QUEUE,
-    LANE_SEGMENT_COUNT,
     PHASE_SEQUENCE_FILENAME_SUFFIX,
     sumo_statistics_args,
     sumo_metrics_args,
@@ -182,11 +181,13 @@ class SumoEnv:
                 else:
                     pos_from_start = traci.vehicle.getLanePosition(veh_id)
                     distance_to_stopline = max(0.0, lane_length - pos_from_start)
-                    seg_length = lane_length / LANE_SEGMENT_COUNT
 
-                    if distance_to_stopline <= seg_length:
+
+                    # Seg1 = 0-L/10, Seg2 = L/10-L/3, Seg3 = rest. LightGPT was
+                    # fine-tuned on these
+                    if distance_to_stopline <= lane_length / 10:
                         segment_1_count += 1
-                    elif distance_to_stopline <= (2 * seg_length):
+                    elif distance_to_stopline <= lane_length / 3:
                         segment_2_count += 1
                     else:
                         segment_3_count += 1
