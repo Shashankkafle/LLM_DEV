@@ -219,6 +219,11 @@ def run_episode(env, conf, agent, phase_map, order, features, replay, recorder,
 
         # Decision round: every intersection has finished its green window.
         if all(handlers[inter_id].switch_phase for inter_id in order):
+            # One network-wide AWT sample per round; decisions are synchronized,
+            # so this matches the per-intersection sampling of the other runners.
+            if recorder is not None:
+                recorder.record_decision_wait()
+
             live_states = [sf.build_state(env, inter_id, features) for inter_id in order]
 
             # Finalize the previous round's transitions (reward = avg queue over window).
