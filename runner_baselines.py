@@ -121,6 +121,9 @@ def parse_args():
     parser.add_argument("--simulation_steps", type=int, default=DEFAULT_SIMULATION_STEPS)
     parser.add_argument("--simulation_config", type=str, default=DEFAULT_SIMULATION_CONFIG)
     parser.add_argument("--use_gui", action="store_true")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="SUMO random seed. Default keeps SUMO's fixed "
+                             "default (deterministic reruns).")
     parser.add_argument(
         "--intersection_config",
         type=str,
@@ -144,6 +147,7 @@ def main(args):
         "simulation_steps": args.simulation_steps,
         "simulation_config": args.simulation_config,
         "intersection_config": args.intersection_config,
+        "seed": args.seed,
     }
     replay_recorder = ReplayRecorder(record_dir=records_dir, meta=run_details)
     recorder = MetricsRecorder(run_dir=records_dir, verbose=False,
@@ -152,7 +156,7 @@ def main(args):
     env = SumoEnv(
         sumo_config=args.simulation_config, use_gui=args.use_gui,
         phase_sequence_dir=phase_sequence_dir, intersection_config=conf,
-        output_dir=records_dir,
+        output_dir=records_dir, seed=args.seed,
     )
     env.start_simulation()
 

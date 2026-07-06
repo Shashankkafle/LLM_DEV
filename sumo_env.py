@@ -18,7 +18,8 @@ movement_to_approach = {
 }
 class SumoEnv:
     def __init__(self, sumo_config, phase_sequence_dir=None, use_gui=False,
-                 intersection_config=INTERSECTION_CONFIG, output_dir=None):
+                 intersection_config=INTERSECTION_CONFIG, output_dir=None,
+                 seed=None):
         self.sumo_config = sumo_config
         self.use_gui = use_gui
         self.intersection_config = intersection_config
@@ -34,6 +35,9 @@ class SumoEnv:
         # cross-controller-comparable metrics. SUMO flushes these on close.
         if output_dir is not None:
             self.cmd += sumo_metrics_args(output_dir)
+        # None keeps SUMO's fixed default seed (deterministic reruns).
+        if seed is not None:
+            self.cmd += ["--seed", str(seed)]
 
     def _build_approach_mapping(self):
         mapping = {j: {} for j in traci.trafficlight.getIDList()}
