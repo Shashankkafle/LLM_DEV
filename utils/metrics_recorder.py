@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 import xml.etree.ElementTree as ET
@@ -14,9 +15,41 @@ from pathlib import Path
 from datetime import datetime
 
 
+def _input_fingerprints(sumo_config):
+    """Git-blob SHA-1 of the sumocfg and the input files it references, keyed
+    by filename. Matches `git hash-object <file>`, so a run's inputs can be
+    checked against a commit directly. Returns None if anything can't be read
+    (a run must never fail over provenance).
+    """
+    def blob_sha1(path):
+        # CRLF->LF so a Windows checkout hashes the same as Linux and as
+        # git's autocrlf-normalized blobs.
+        data = path.read_bytes().replace(b"\r\n", b"\n")
+        return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+    try:
+        config_path = Path(sumo_config)
+        fingerprints = {config_path.name: blob_sha1(config_path)}
+        root = ET.parse(config_path).getroot()
+        for tag in ("net-file", "route-files", "additional-files"):
+            node = root.find(f"./input/{tag}")
+            if node is None:
+                continue
+            for name in node.get("value", "").split(","):
+                ref = config_path.parent / name.strip()
+                if ref.exists():
+                    fingerprints[ref.name] = blob_sha1(ref)
+        return fingerprints
+    except Exception:
+        return None
+
+
 class MetricsRecorder:
-    def __init__(self, run_dir, verbose=True, phase_names=None):
+    def __init__(self, run_dir, verbose=True, phase_names=None, sumo_config=None):
         self.verbose = verbose
+        self.input_files = (
+            _input_fingerprints(sumo_config) if sumo_config else None
+        )
 
         # Valid phase names used to flag LLM hallucinations. Defaults to the
         # default config's phases; pass the active config's names when running
@@ -221,6 +254,7 @@ class MetricsRecorder:
         """
         summary = self._trip_averages()
         summary["sumo_version"] = self.sumo_version
+        summary["input_files"] = self.input_files
         summary["average_queue_length"] = (
             round(sum(self.queue_lengths) / len(self.queue_lengths), 2)
             if self.queue_lengths else None

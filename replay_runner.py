@@ -192,7 +192,8 @@ def main():
     print(f"SUMO command  : {' '.join(sumo_cmd)}")
     print("-" * 50)
 
-    recorder = MetricsRecorder(run_dir=run_dir, verbose=True)
+    recorder = MetricsRecorder(run_dir=run_dir, verbose=True,
+                               sumo_config=sumocfg_path)
 
     traci.start(sumo_cmd)
 

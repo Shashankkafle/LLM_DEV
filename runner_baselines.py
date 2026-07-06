@@ -147,7 +147,8 @@ def main(args):
     }
     replay_recorder = ReplayRecorder(record_dir=records_dir, meta=run_details)
     recorder = MetricsRecorder(run_dir=records_dir, verbose=False,
-                               phase_names=list(conf["phases"].keys()))
+                               phase_names=list(conf["phases"].keys()),
+                               sumo_config=args.simulation_config)
     env = SumoEnv(
         sumo_config=args.simulation_config, use_gui=args.use_gui,
         phase_sequence_dir=phase_sequence_dir, intersection_config=conf,

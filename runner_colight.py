@@ -417,7 +417,8 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_c
               f"(model predates metadata logging)")
 
     recorder = MetricsRecorder(run_dir=records_dir, verbose=False,
-                               phase_names=list(conf["phases"].keys()))
+                               phase_names=list(conf["phases"].keys()),
+                               sumo_config=args.simulation_config)
     replay = ReplayRecorder(record_dir=records_dir, meta={
         "controller": args.variant,
         "mode": "eval",
