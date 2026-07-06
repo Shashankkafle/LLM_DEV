@@ -52,6 +52,10 @@ class MetricsRecorder:
         # still in the network their time-so-far when the horizon cuts them off.
         self.last_sim_time = 0.0
 
+        # Captured on the first recorded step (TraCI is not connected yet at
+        # construction time, and is already closed by final-summary time).
+        self.sumo_version = None
+
         # Decision-outcome counters. Every decision point is exactly one type;
         # see record_decision for the classification.
         self.total_decisions = 0            # all decision points, every type
@@ -82,6 +86,8 @@ class MetricsRecorder:
         current_time = traci.simulation.getTime()
         step_length = traci.simulation.getDeltaT()
         self.last_sim_time = current_time
+        if self.sumo_version is None:
+            self.sumo_version = traci.getVersion()[1]
 
         # Track vehicles entering the simulation this step.
         self.loaded_ids.update(traci.simulation.getLoadedIDList())
@@ -214,6 +220,7 @@ class MetricsRecorder:
         averaged over all recorded steps.
         """
         summary = self._trip_averages()
+        summary["sumo_version"] = self.sumo_version
         summary["average_queue_length"] = (
             round(sum(self.queue_lengths) / len(self.queue_lengths), 2)
             if self.queue_lengths else None
