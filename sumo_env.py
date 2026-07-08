@@ -7,7 +7,7 @@ from configurations import (
     PHASE_SEQUENCE_FILENAME_SUFFIX,
     sumo_metrics_args,
 )
-from utils.general_utils import append_to_json_file, get_phase_name
+from utils.general_utils import append_jsonl, get_phase_name
 approaches = ["North", "South", "East", "West"]
 movement_to_approach = {
     "ETWT": ["East", "West"],
@@ -138,7 +138,7 @@ class SumoEnv:
                 "new_phase": phase_config,
                 "new_phase_name": get_phase_name(self.intersection_config, phase_config),
             }
-            append_to_json_file(log_file, change_dict)
+            append_jsonl(log_file, change_dict)
 
         traci.trafficlight.setRedYellowGreenState(intersection_id, phase_config)
 

@@ -1,4 +1,3 @@
-import os
 import json
 
 
@@ -14,14 +13,8 @@ def get_phase_name(config, phase_string):
 
 
 
-def append_to_json_file(file_path, entry):
-    """Read an existing JSON array from file_path (or start fresh), append entry, and write back."""
-    if os.path.exists(file_path):
-        with open(file_path, "r") as f:
-            data = json.load(f)
-    else:
-        data = []
-    data.append(entry)
-    with open(file_path, "w") as f:
-        json.dump(data, f, indent=2)
+def append_jsonl(file_path, entry):
+    """Append one JSON object as a line to a JSONL file (created on first write)."""
+    with open(file_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
 

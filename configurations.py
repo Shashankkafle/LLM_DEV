@@ -252,7 +252,7 @@ RERUNS_DIR_NAME = "reruns"
 STEP_SUMMARIES_FILENAME = "step_summaries.jsonl"
 FINAL_SUMMARY_FILENAME = "final_summary.json"
 DECISIONS_FILENAME = "decisions.jsonl"
-PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.json"
+PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.jsonl"
 
 REPLAY_EVENTS_FILENAME = "replay_record.jsonl"
 REPLAY_META_FILENAME = "replay_meta.json"
@@ -314,8 +314,8 @@ COLIGHT_NUM_LANE_FEATURES = 8
 # Top-k nearest neighbours used to build each intersection's adjacency row.
 COLIGHT_TOP_K_ADJACENCY = 5
 
-# One decision per green window; equals PhaseHandler default_green_duration so the
-# RL cadence matches both the source (MIN_ACTION_TIME = MEASURE_TIME = 30) and the LLM.
+# Default number of training rounds (one episode each), matching the source
+# repo's run_colight.py default. Override per-run with --num_rounds.
 COLIGHT_NUM_ROUNDS = 100
 
 # Reward = COEFF * (per-intersection stopped-vehicle count), averaged over the window.
