@@ -266,29 +266,11 @@ SUMO_QUEUE_FILENAME = "queue_output.xml"
 SUMO_STATISTIC_FILENAME = "sumo_statistics.xml"
 
 
-def sumo_statistics_args(output_dir):
-    """SUMO CLI flags that emit trip statistics into output_dir.
-
-    These give canonical aggregate metrics -- mean travel time (incl. the wait
-    to be inserted), time loss, and inserted/running/waiting/teleported counts
-    -- so every controller is scored on the same honest, full-population basis.
-    This is only about emitting output; it does not change SUMO's simulation
-    behavior (teleport/insertion defaults are untouched). Used by the replay
-    runner; live runs use sumo_metrics_args below.
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return [
-        "--tripinfo-output", str(output_dir / SUMO_TRIPINFO_FILENAME),
-        "--statistic-output", str(output_dir / SUMO_STATISTIC_FILENAME),
-        "--duration-log.statistics", "true",
-    ]
-
-
 def sumo_metrics_args(output_dir):
     """SUMO CLI flags for honest, cross-controller-comparable measurement.
 
-    Two jobs, bundled so every launcher stays in sync:
+    Shared by every launcher (LLM, replay, baselines, CoLight eval) so they all
+    simulate and score under identical conditions. Two jobs, bundled:
 
     1. Gridlock-honest behavior. ``--time-to-teleport -1`` disables SUMO's
        default 300 s teleport, so vehicles stuck in a jam are NOT silently

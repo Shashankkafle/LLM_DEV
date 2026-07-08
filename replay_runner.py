@@ -48,7 +48,7 @@ from configurations import (
     SUMO_GUI_BINARY,
     RERUNS_DIR_NAME,
     REPLAY_META_FILENAME,
-    sumo_statistics_args,
+    sumo_metrics_args,
 )
 from utils.metrics_recorder import MetricsRecorder
 
@@ -123,10 +123,11 @@ def _load_legacy_schedule(record_path: Path):
 def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None):
     binary = SUMO_GUI_BINARY if use_gui else SUMO_BINARY
     cmd = [binary, "-c", sumocfg_path]
-    # Emit trip statistics into the run dir so the re-scored LLM run reports the
-    # same population-faithful metrics as every other controller.
+    # Same flags as the original live run (see SumoEnv): identical simulation
+    # behavior (teleport disabled) plus the same metric outputs, so the replay
+    # reproduces the run it re-scores and is comparable to every controller.
     if output_dir is not None:
-        cmd += sumo_statistics_args(output_dir)
+        cmd += sumo_metrics_args(output_dir)
     return cmd
 
 

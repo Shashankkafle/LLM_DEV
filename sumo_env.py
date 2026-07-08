@@ -5,7 +5,6 @@ from configurations import (
     SUMO_GUI_BINARY,
     STOP_SPEED_EARLY_QUEUE,
     PHASE_SEQUENCE_FILENAME_SUFFIX,
-    sumo_statistics_args,
     sumo_metrics_args,
 )
 from utils.general_utils import append_to_json_file, get_phase_name
