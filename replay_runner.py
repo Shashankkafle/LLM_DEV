@@ -120,7 +120,7 @@ def _load_legacy_schedule(record_path: Path):
     return phase_schedule, run_details
 
 
-def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None):
+def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None, seed=None):
     binary = SUMO_GUI_BINARY if use_gui else SUMO_BINARY
     cmd = [binary, "-c", sumocfg_path]
     # Same flags as the original live run (see SumoEnv): identical simulation
@@ -128,6 +128,9 @@ def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None):
     # reproduces the run it re-scores and is comparable to every controller.
     if output_dir is not None:
         cmd += sumo_metrics_args(output_dir)
+    # None keeps SUMO's fixed default seed, matching an unseeded original run.
+    if seed is not None:
+        cmd += ["--seed", str(seed)]
     return cmd
 
 
@@ -142,12 +145,6 @@ def main():
         "--no-gui",
         action="store_true",
         help="Run headless (sumo) instead of sumo-gui. Default is GUI, since you want to observe it.",
-    )
-    parser.add_argument(
-        "--run-dir",
-        type=str,
-        default=None,
-        help="Directory to write metrics output to. Defaults to a timestamped folder under ./runs/",
     )
     args = parser.parse_args()
 
@@ -177,8 +174,10 @@ def main():
     run_dir =  Path(schedule_path).parent / RERUNS_DIR_NAME / f"{safe_name}_{timestamp}"
 
     # Build the command after run_dir is known so SUMO writes its statistics
-    # into this run's output directory.
-    sumo_cmd = build_sumo_cmd(sumocfg_path, use_gui, output_dir=run_dir)
+    # into this run's output directory. The original run's seed (if any) is
+    # replayed too, so the simulation reproduces the same traffic.
+    sumo_cmd = build_sumo_cmd(sumocfg_path, use_gui, output_dir=run_dir,
+                              seed=run_details.get("seed"))
 
     # Auto-start the GUI so you don't have to click "play" manually.
     # if use_gui:

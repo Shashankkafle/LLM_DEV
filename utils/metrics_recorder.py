@@ -268,7 +268,6 @@ class MetricsRecorder:
         summary["total_departed_vehicles"] = total_departed
         summary["loaded_but_never_departed"] = max(total_loaded - total_departed, 0)
         summary["still_running_at_end"] = max(total_departed - total_arrived, 0)
-        print(f"decision_wait_averages: {self.decision_wait_averages}")
         average_per_decision_wait_s = (
             round(sum(self.decision_wait_averages) / len(self.decision_wait_averages), 2)
             if len(self.decision_wait_averages) > 0 else 0
@@ -390,9 +389,6 @@ class MetricsRecorder:
             else:
                 self.total_hallucinations += 1  # tag present but not a valid phase
             parsing_valid = False
-
-        print(f"\n--- Decision @ Step {step} ---")
-        self.record_decision_wait()
 
         decision_event = {
             "step": step,

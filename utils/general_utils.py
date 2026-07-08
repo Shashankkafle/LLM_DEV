@@ -13,13 +13,6 @@ def get_phase_name(config, phase_string):
     print(f"Warning: Phase string '{phase_string}' does not match any known phase in the configuration.")
 
 
-def append_to_file(file_path, content):
-    if not os.path.exists(file_path):
-        with open(file_path, "w") as f:
-            f.write(content)
-    with open(file_path, "a") as f:
-        f.write(content)
-
 
 def append_to_json_file(file_path, entry):
     """Read an existing JSON array from file_path (or start fresh), append entry, and write back."""

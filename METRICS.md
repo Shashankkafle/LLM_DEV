@@ -47,8 +47,9 @@ apparent +20% deficit (389 vs 322.85) to within 4% of the paper (310.03).
 
 Caveats: the per-decision metric samples network-wide at each intersection
 decision (16 near-identical samples per round under FixedTime — harmless).
-It is wired into the LLM and baseline runners; `runner_colight` does not call
-`record_decision_wait()` yet, so CoLight summaries show 0 there.
+It is wired into every runner: the shared control loop (`runner_common`)
+samples once per intersection decision for the LLM and baseline runners, and
+`runner_colight` samples once per synchronized decision round.
 
 ## Queue length
 
@@ -145,6 +146,5 @@ Table 11 template ("Allowed lanes:", with a "Note:" block) is the GPT-4 path
 - LLM (LightGPT) HZ-1 eval in flight — the D2 verdict; expect the CityFlow-clock
   ATT near or below the paper's 310.78 if the exit-edge effect dominates there too.
 - Standardize all machines on SUMO 1.26.
-- Wire `record_decision_wait()` into `runner_colight` for CoLight AWT.
 - Prompt-encoding alignment (list above) — deferred decision.
 - Seed sweeps only matter for non-cfphys (stochastic) configs.

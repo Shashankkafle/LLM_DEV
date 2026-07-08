@@ -12,7 +12,6 @@ from pathlib import Path
 # =============================================================================
 
 location_dict = {"N": "North", "S": "South", "E": "East", "W": "West"}
-location_dict_detail = {"N": "Northern", "S": "Southern", "E": "Eastern", "W": "Western"}
 
 # These movement maps are identical across every intersection config, so they
 # are defined once here and referenced from each config below.

@@ -27,6 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from sumo_env import SumoEnv
+from runner_common import create_run_dirs
 from utils.tf_device import configure_tf_devices
 from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
@@ -36,7 +37,6 @@ from configurations import (
     INTERSECTION_CONFIGS,
     DEFAULT_SIMULATION_STEPS,
     DEFAULT_START_PHASE,
-    LOGS_DIR_NAME,
     PHASE_SEQUENCES_DIR_NAME,
     COLIGHT_AGENT_CONF,
     COLIGHT_FEATURES,
@@ -489,9 +489,7 @@ def main(args):
 
     conf = INTERSECTION_CONFIGS[args.intersection_config]
     features, agent_conf = VARIANTS[args.variant]
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    records_dir = Path(LOGS_DIR_NAME) / f"{args.test_name}_{timestamp}"
-    records_dir.mkdir(parents=True, exist_ok=True)
+    records_dir, _ = create_run_dirs(args.test_name)
 
     weights_dir = None
     if args.mode in ("train", "train_eval"):
