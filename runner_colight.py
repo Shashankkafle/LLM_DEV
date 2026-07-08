@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import traci
 
 from sumo_env import SumoEnv
 from runner_common import create_run_dirs
@@ -246,6 +247,14 @@ def run_episode(env, conf, agent, phase_map, order, features, replay, recorder,
             prev = (live_states, actions, step)
             window_queue = {inter_id: 0.0 for inter_id in order}
             window_steps = 0
+
+        # Eval-only early exit, matching the shared control loop (runner_common):
+        # once SUMO expects no more vehicles, the remaining steps are all-zero
+        # samples that would dilute the step-averaged metrics. Training keeps its
+        # fixed horizon so per-round transition counts stay comparable across runs.
+        if recorder is not None and traci.simulation.getMinExpectedNumber() <= 0:
+            print(f"No more vehicles expected at step {step}, stopping early.")
+            break
 
     # Finalize the LAST decision's transition. Its window ran to the episode end
     # (no following decision to trigger the normal finalize), so we close it here
