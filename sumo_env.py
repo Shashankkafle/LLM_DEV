@@ -108,13 +108,13 @@ class SumoEnv:
         traci.start(self.cmd)
         self.intersection_ids = traci.trafficlight.getIDList()
         self.movement_lane_map = {
-        intersection_id: self._build_movement_lane_map(intersection_id)
-        for intersection_id in self.intersection_ids
+            intersection_id: self._build_movement_lane_map(intersection_id)
+            for intersection_id in self.intersection_ids
         }
         self.approach_mapping = self._build_approach_mapping()
-        print("Initialized SumoEnv with the following approach mapping:", self.approach_mapping)
-
-        print("Initialized SumoEnv with the following movement-lane mapping:", self.movement_lane_map)
+        mapped_lanes = sum(len(lanes) for lanes in self.approach_mapping.values())
+        print(f"SumoEnv initialized: {len(self.intersection_ids)} intersections, "
+              f"{mapped_lanes} approach lanes mapped")
 
     def get_current_step(self):
         return traci.simulation.getCurrentTime() // 1000  # Convert milliseconds to seconds

@@ -188,7 +188,8 @@ def main():
     print(f"Total steps   : {total_steps}")
     print(f"GUI           : {use_gui}")
     print(f"Output dir    : {run_dir}")
-    print(f"Phase events  : {sorted(phase_schedule.keys())}")
+    total_events = sum(len(events) for events in phase_schedule.values())
+    print(f"Phase events  : {total_events} events across {len(phase_schedule)} steps")
     print(f"SUMO command  : {' '.join(sumo_cmd)}")
     print("-" * 50)
 
