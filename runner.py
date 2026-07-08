@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sumo_env import SumoEnv
-from utils.prompt_builder import getPrompt
+from utils.prompt_builder import get_prompt
 from models_inference.LLM.open_llm import LLM_Inference
 from utils.phase_handler import PhaseHandler
 from configurations import (
@@ -159,7 +159,7 @@ def main(args):
                     extracted_signal = None
                     next_phase = previous_phase
                 else:
-                    prompt = getPrompt(state_dict=state_data)
+                    prompt = get_prompt(state_dict=state_data)
                     start_time = time.time()
                     llm_output = llm.inference(prompt)
                     # llm_output = mock_llm_inference(prompt, conf)
