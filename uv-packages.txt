@@ -39,5 +39,17 @@ numpy>=1.26.0
 regex>=2024.5.15
 safetensors>=0.4.3
 tokenizers>=0.19.0
-torch>=2.3.0
+# torch: install SEPARATELY before this file, with an explicit CUDA build, e.g.
+#   pip install "torch>=2.3.0" --index-url https://download.pytorch.org/whl/cu121
+# The cu121 wheel runs on any machine whose driver supports CUDA >= 12.1, which
+# covers all our nodes. It is kept out of this list so the bulk install never
+# pulls the PyPI-default wheel (currently a CUDA-13 build that breaks on our drivers).
 transformers>=4.43.0
+
+# CoLight RL baseline -- TensorFlow/Keras agent (lifted verbatim from LLMTSCS).
+# tf-keras + TF_USE_LEGACY_KERAS=1 (set in models_inference/RL/colight_agent.py) give
+# Keras-2 semantics on modern TF so the verbatim Keras-2 code runs. Pulls in the TF
+# transitive deps (keras, h5py, grpcio, protobuf, ml_dtypes, ...) via uv. numpy 2.x /
+# torch are unaffected (verified: no downgrades). Needed for runner_colight.py.
+tensorflow-cpu==2.21.0
+tf-keras==2.21.0

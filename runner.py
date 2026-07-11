@@ -125,6 +125,7 @@ def main(args):
     env = SumoEnv(
         sumo_config=args.simulation_config, use_gui=args.use_gui,
         phase_sequence_dir=phase_sequence_dir, intersection_config=conf,
+        output_dir=records_dir,
     )
     env.start_simulation()
 
@@ -194,8 +195,10 @@ def main(args):
                     intersection_id=intersection_id
                 )
 
-    recorder.save_final_summary()
+    # Close SUMO first so it flushes the statistics file, then summarize (the
+    # summary parses that file for population-faithful metrics).
     env.close()
+    recorder.save_final_summary()
     # Replay events + metadata were streamed to disk during the run; nothing
     # left to flush here.
 

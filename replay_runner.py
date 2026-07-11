@@ -48,6 +48,7 @@ from configurations import (
     SUMO_GUI_BINARY,
     RERUNS_DIR_NAME,
     REPLAY_META_FILENAME,
+    sumo_statistics_args,
 )
 from utils.metrics_recorder import MetricsRecorder
 
@@ -119,9 +120,14 @@ def _load_legacy_schedule(record_path: Path):
     return phase_schedule, run_details
 
 
-def build_sumo_cmd(sumocfg_path: str, use_gui: bool):
+def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None):
     binary = SUMO_GUI_BINARY if use_gui else SUMO_BINARY
-    return [binary, "-c", sumocfg_path]
+    cmd = [binary, "-c", sumocfg_path]
+    # Emit trip statistics into the run dir so the re-scored LLM run reports the
+    # same population-faithful metrics as every other controller.
+    if output_dir is not None:
+        cmd += sumo_statistics_args(output_dir)
+    return cmd
 
 
 def main():
@@ -162,17 +168,20 @@ def main():
         )
 
     use_gui = not args.no_gui
-    sumo_cmd = build_sumo_cmd(sumocfg_path, use_gui)
-
-    # Auto-start the GUI so you don't have to click "play" manually.
-    if use_gui:
-        sumo_cmd.append("--start")
 
     test_name = run_details.get("test_name", "phase_schedule_run")
     safe_name = test_name.replace(" ", "_")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-       
+
     run_dir =  Path(schedule_path).parent / RERUNS_DIR_NAME / f"{safe_name}_{timestamp}"
+
+    # Build the command after run_dir is known so SUMO writes its statistics
+    # into this run's output directory.
+    sumo_cmd = build_sumo_cmd(sumocfg_path, use_gui, output_dir=run_dir)
+
+    # Auto-start the GUI so you don't have to click "play" manually.
+    # if use_gui:
+    #     sumo_cmd.append("--start")
 
     print(f"Run name      : {run_details.get('test_name', '(unnamed)')}")
     print(f"SUMO config   : {sumocfg_path}")
@@ -222,8 +231,10 @@ def main():
                 break
 
     finally:
-        recorder.save_final_summary()
+        # Close SUMO first so it flushes the statistics file, then summarize
+        # (save_final_summary parses that file for population-faithful metrics).
         traci.close()
+        recorder.save_final_summary()
 
     
 

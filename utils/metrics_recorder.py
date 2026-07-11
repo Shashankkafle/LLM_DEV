@@ -1,11 +1,13 @@
 import json
 import time
+import xml.etree.ElementTree as ET
 from configurations import (
     MIN_SPEED,
     PHASE_NAMES,
     STEP_SUMMARIES_FILENAME,
     FINAL_SUMMARY_FILENAME,
     DECISIONS_FILENAME,
+    SUMO_STATISTIC_FILENAME,
 )
 import traci
 from pathlib import Path
@@ -38,6 +40,10 @@ class MetricsRecorder:
         # One network-wide stopped-vehicle count per step (snapshot, time-averaged later).
         self.queue_lengths = []
 
+        # Sim time at the most recent recorded step. Used to charge vehicles
+        # still in the network their time-so-far when the horizon cuts them off.
+        self.last_sim_time = 0.0
+
         # Decision-outcome counters. Every decision point is exactly one type;
         # see record_decision for the classification.
         self.total_decisions = 0            # all decision points, every type
@@ -67,6 +73,7 @@ class MetricsRecorder:
     def record_step_summary(self, step):
         current_time = traci.simulation.getTime()
         step_length = traci.simulation.getDeltaT()
+        self.last_sim_time = current_time
 
         # Track vehicles entering the simulation this step.
         self.loaded_ids.update(traci.simulation.getLoadedIDList())
@@ -100,6 +107,88 @@ class MetricsRecorder:
         summary["step"] = step
         with open(self.step_log_path, "a") as f:
             f.write(json.dumps(summary) + "\n")
+
+    def _parse_sumo_statistics(self):
+        """Parse SUMO's --statistic-output (written on close) into
+        population-faithful fields.
+
+        Unlike the trip averages above -- which start the clock at insertion and
+        count only completed trips -- these use SUMO's own per-vehicle
+        accounting: mean duration PLUS the wait-to-insert (departDelay), time
+        loss, and the full inserted/running/never-inserted/teleported breakdown.
+        Returns {} if the file is absent (e.g. a launcher that didn't enable the
+        statistics output, or train-mode), so older runs keep working.
+        """
+        stats_path = Path(self.run_dir) / SUMO_STATISTIC_FILENAME
+        if not stats_path.exists():
+            return {}
+        try:
+            root = ET.parse(stats_path).getroot()
+        except ET.ParseError:
+            return {}
+
+        out = {}
+        vehicles = root.find("vehicles")
+        if vehicles is not None:
+            inserted = int(vehicles.get("inserted", 0))
+            running = int(vehicles.get("running", 0))
+            out["sumo_vehicles_loaded"] = int(vehicles.get("loaded", 0))
+            out["sumo_vehicles_inserted"] = inserted
+            out["sumo_vehicles_running_at_end"] = running
+            # Scheduled to depart but never inserted -- source-edge gridlock.
+            out["sumo_vehicles_not_inserted"] = int(vehicles.get("waiting", 0))
+            out["sumo_vehicles_finished"] = inserted - running
+
+        teleports = root.find("teleports")
+        if teleports is not None:
+            out["sumo_teleports_total"] = int(teleports.get("total", 0))
+
+        trip = root.find("vehicleTripStatistics")
+        if trip is not None:
+            duration = float(trip.get("duration", 0.0))
+            depart_delay = float(trip.get("departDelay", 0.0))
+            out["sumo_trip_count"] = int(trip.get("count", 0))
+            out["sumo_mean_trip_duration_s"] = round(duration, 2)
+            out["sumo_mean_depart_delay_s"] = round(depart_delay, 2)
+            out["sumo_mean_time_loss_s"] = round(float(trip.get("timeLoss", 0.0)), 2)
+            # CityFlow-comparable travel time: charge the wait-to-insert on top
+            # of in-network duration. Still excludes never-inserted vehicles,
+            # which are reported separately as sumo_vehicles_not_inserted.
+            out["sumo_effective_att_s"] = round(duration + depart_delay, 2)
+
+        return out
+
+    def _cityflow_style_averages(self):
+        """Travel/wait averages that also count vehicles still in the network at
+        the horizon, charging each its time-so-far (last_sim_time - depart).
+
+        This mirrors CityFlow, which averages over in-flight vehicles too, so a
+        hard simulation horizon doesn't silently drop the vehicles that depart
+        too late to finish (~16% here). Vehicles that never got inserted are
+        still excluded -- they have no in-network time -- and are reported
+        separately as loaded_but_never_departed / sumo_vehicles_not_inserted.
+        """
+        still_running = self.departed_ids - self.arrived_ids
+        count = len(self.completed_trips) + len(still_running)
+        if count == 0:
+            return {
+                "cityflow_style_vehicle_count": 0,
+                "cityflow_style_att_s": None,
+                "cityflow_style_awt_s": None,
+            }
+        total_travel = sum(t["travel_time"] for t in self.completed_trips.values())
+        total_waiting = sum(t["waiting_time"] for t in self.completed_trips.values())
+        for veh in still_running:
+            depart = self.depart_times.get(veh)
+            if depart is None:
+                continue  # shouldn't happen: departed vehicles always have a time
+            total_travel += self.last_sim_time - depart
+            total_waiting += self.waiting_accumulated.get(veh, 0.0)
+        return {
+            "cityflow_style_vehicle_count": count,
+            "cityflow_style_att_s": round(total_travel / count, 2),
+            "cityflow_style_awt_s": round(total_waiting / count, 2),
+        }
 
     def get_final_summary(self):
         """
@@ -150,6 +239,14 @@ class MetricsRecorder:
         summary["hallucination_rate"] = (
             round(self.total_hallucinations / llm_queried, 4) if llm_queried > 0 else None
         )
+
+        # CityFlow-style averages that also count vehicles still in the network
+        # at the horizon, so late departures are not silently dropped.
+        summary.update(self._cityflow_style_averages())
+
+        # Population-faithful metrics from SUMO's own statistics (incl. the
+        # never-inserted vehicles that the completed-trip averages above hide).
+        summary.update(self._parse_sumo_statistics())
         return summary
 
     def save_final_summary(self):
