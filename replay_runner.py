@@ -48,7 +48,7 @@ from configurations import (
     SUMO_GUI_BINARY,
     RERUNS_DIR_NAME,
     REPLAY_META_FILENAME,
-    sumo_statistics_args,
+    sumo_metrics_args,
 )
 from utils.metrics_recorder import MetricsRecorder
 
@@ -120,13 +120,17 @@ def _load_legacy_schedule(record_path: Path):
     return phase_schedule, run_details
 
 
-def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None):
+def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None, seed=None):
     binary = SUMO_GUI_BINARY if use_gui else SUMO_BINARY
     cmd = [binary, "-c", sumocfg_path]
-    # Emit trip statistics into the run dir so the re-scored LLM run reports the
-    # same population-faithful metrics as every other controller.
+    # Same flags as the original live run (see SumoEnv): identical simulation
+    # behavior (teleport disabled) plus the same metric outputs, so the replay
+    # reproduces the run it re-scores and is comparable to every controller.
     if output_dir is not None:
-        cmd += sumo_statistics_args(output_dir)
+        cmd += sumo_metrics_args(output_dir)
+    # None keeps SUMO's fixed default seed, matching an unseeded original run.
+    if seed is not None:
+        cmd += ["--seed", str(seed)]
     return cmd
 
 
@@ -141,12 +145,6 @@ def main():
         "--no-gui",
         action="store_true",
         help="Run headless (sumo) instead of sumo-gui. Default is GUI, since you want to observe it.",
-    )
-    parser.add_argument(
-        "--run-dir",
-        type=str,
-        default=None,
-        help="Directory to write metrics output to. Defaults to a timestamped folder under ./runs/",
     )
     args = parser.parse_args()
 
@@ -176,8 +174,10 @@ def main():
     run_dir =  Path(schedule_path).parent / RERUNS_DIR_NAME / f"{safe_name}_{timestamp}"
 
     # Build the command after run_dir is known so SUMO writes its statistics
-    # into this run's output directory.
-    sumo_cmd = build_sumo_cmd(sumocfg_path, use_gui, output_dir=run_dir)
+    # into this run's output directory. The original run's seed (if any) is
+    # replayed too, so the simulation reproduces the same traffic.
+    sumo_cmd = build_sumo_cmd(sumocfg_path, use_gui, output_dir=run_dir,
+                              seed=run_details.get("seed"))
 
     # Auto-start the GUI so you don't have to click "play" manually.
     # if use_gui:
@@ -188,11 +188,13 @@ def main():
     print(f"Total steps   : {total_steps}")
     print(f"GUI           : {use_gui}")
     print(f"Output dir    : {run_dir}")
-    print(f"Phase events  : {sorted(phase_schedule.keys())}")
+    total_events = sum(len(events) for events in phase_schedule.values())
+    print(f"Phase events  : {total_events} events across {len(phase_schedule)} steps")
     print(f"SUMO command  : {' '.join(sumo_cmd)}")
     print("-" * 50)
 
-    recorder = MetricsRecorder(run_dir=run_dir, verbose=True)
+    recorder = MetricsRecorder(run_dir=run_dir, verbose=True,
+                               sumo_config=sumocfg_path)
 
     traci.start(sumo_cmd)
 

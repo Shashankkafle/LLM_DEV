@@ -4,11 +4,10 @@ from configurations import (
     SUMO_BINARY,
     SUMO_GUI_BINARY,
     STOP_SPEED_EARLY_QUEUE,
-    LANE_SEGMENT_COUNT,
     PHASE_SEQUENCE_FILENAME_SUFFIX,
-    sumo_statistics_args,
+    sumo_metrics_args,
 )
-from utils.general_utils import append_to_json_file, get_phase_name
+from utils.general_utils import append_jsonl, get_phase_name
 approaches = ["North", "South", "East", "West"]
 movement_to_approach = {
     "ETWT": ["East", "West"],
@@ -18,7 +17,8 @@ movement_to_approach = {
 }
 class SumoEnv:
     def __init__(self, sumo_config, phase_sequence_dir=None, use_gui=False,
-                 intersection_config=INTERSECTION_CONFIG, output_dir=None):
+                 intersection_config=INTERSECTION_CONFIG, output_dir=None,
+                 seed=None):
         self.sumo_config = sumo_config
         self.use_gui = use_gui
         self.intersection_config = intersection_config
@@ -29,10 +29,14 @@ class SumoEnv:
         else:
             sumo_binary = SUMO_BINARY
         self.cmd = [sumo_binary, "-c", self.sumo_config]
-        # When an output dir is given, have SUMO emit trip statistics there so
-        # MetricsRecorder can report population-faithful, comparable metrics.
+        # When an output dir is given, disable teleport and emit
+        # tripinfo/queue/statistics so cal_offline can report honest,
+        # cross-controller-comparable metrics. SUMO flushes these on close.
         if output_dir is not None:
-            self.cmd += sumo_statistics_args(output_dir)
+            self.cmd += sumo_metrics_args(output_dir)
+        # None keeps SUMO's fixed default seed (deterministic reruns).
+        if seed is not None:
+            self.cmd += ["--seed", str(seed)]
 
     def _build_approach_mapping(self):
         mapping = {j: {} for j in traci.trafficlight.getIDList()}
@@ -104,13 +108,13 @@ class SumoEnv:
         traci.start(self.cmd)
         self.intersection_ids = traci.trafficlight.getIDList()
         self.movement_lane_map = {
-        intersection_id: self._build_movement_lane_map(intersection_id)
-        for intersection_id in self.intersection_ids
+            intersection_id: self._build_movement_lane_map(intersection_id)
+            for intersection_id in self.intersection_ids
         }
         self.approach_mapping = self._build_approach_mapping()
-        print("Initialized SumoEnv with the following approach mapping:", self.approach_mapping)
-
-        print("Initialized SumoEnv with the following movement-lane mapping:", self.movement_lane_map)
+        mapped_lanes = sum(len(lanes) for lanes in self.approach_mapping.values())
+        print(f"SumoEnv initialized: {len(self.intersection_ids)} intersections, "
+              f"{mapped_lanes} approach lanes mapped")
 
     def get_current_step(self):
         return traci.simulation.getCurrentTime() // 1000  # Convert milliseconds to seconds
@@ -134,7 +138,7 @@ class SumoEnv:
                 "new_phase": phase_config,
                 "new_phase_name": get_phase_name(self.intersection_config, phase_config),
             }
-            append_to_json_file(log_file, change_dict)
+            append_jsonl(log_file, change_dict)
 
         traci.trafficlight.setRedYellowGreenState(intersection_id, phase_config)
 
@@ -180,11 +184,13 @@ class SumoEnv:
                 else:
                     pos_from_start = traci.vehicle.getLanePosition(veh_id)
                     distance_to_stopline = max(0.0, lane_length - pos_from_start)
-                    seg_length = lane_length / LANE_SEGMENT_COUNT
 
-                    if distance_to_stopline <= seg_length:
+
+                    # Seg1 = 0-L/10, Seg2 = L/10-L/3, Seg3 = rest. LightGPT was
+                    # fine-tuned on these
+                    if distance_to_stopline <= lane_length / 10:
                         segment_1_count += 1
-                    elif distance_to_stopline <= (2 * seg_length):
+                    elif distance_to_stopline <= lane_length / 3:
                         segment_2_count += 1
                     else:
                         segment_3_count += 1

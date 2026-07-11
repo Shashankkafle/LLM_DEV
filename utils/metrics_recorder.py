@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 import xml.etree.ElementTree as ET
@@ -14,9 +15,41 @@ from pathlib import Path
 from datetime import datetime
 
 
+def _input_fingerprints(sumo_config):
+    """Git-blob SHA-1 of the sumocfg and the input files it references, keyed
+    by filename. Matches `git hash-object <file>`, so a run's inputs can be
+    checked against a commit directly. Returns None if anything can't be read
+    (a run must never fail over provenance).
+    """
+    def blob_sha1(path):
+        # CRLF->LF so a Windows checkout hashes the same as Linux and as
+        # git's autocrlf-normalized blobs.
+        data = path.read_bytes().replace(b"\r\n", b"\n")
+        return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+    try:
+        config_path = Path(sumo_config)
+        fingerprints = {config_path.name: blob_sha1(config_path)}
+        root = ET.parse(config_path).getroot()
+        for tag in ("net-file", "route-files", "additional-files"):
+            node = root.find(f"./input/{tag}")
+            if node is None:
+                continue
+            for name in node.get("value", "").split(","):
+                ref = config_path.parent / name.strip()
+                if ref.exists():
+                    fingerprints[ref.name] = blob_sha1(ref)
+        return fingerprints
+    except Exception:
+        return None
+
+
 class MetricsRecorder:
-    def __init__(self, run_dir, verbose=True, phase_names=None):
+    def __init__(self, run_dir, verbose=True, phase_names=None, sumo_config=None):
         self.verbose = verbose
+        self.input_files = (
+            _input_fingerprints(sumo_config) if sumo_config else None
+        )
 
         # Valid phase names used to flag LLM hallucinations. Defaults to the
         # default config's phases; pass the active config's names when running
@@ -32,17 +65,29 @@ class MetricsRecorder:
         self.waiting_accumulated = {}  # veh -> total seconds spent stopped so far
         self.completed_trips = {}      # veh -> {"travel_time", "waiting_time"} once it arrives
 
+        # CityFlow-clock ATT: LLMTSCS times only the dwell on intersection
+        # approach lanes, so junction crossings and the final route edge (the
+        # boundary exit, ~70 s free-flow here) are never counted. Accumulate
+        # the same quantity for a like-for-like comparison with its tables.
+        self.final_edges = {}    # veh -> last edge of its route
+        self.approach_time = {}  # veh -> seconds spent on non-final, non-internal edges
+
         # Cumulative id sets, so we can report loaded vs departed vs arrived.
         self.loaded_ids = set()
         self.departed_ids = set()
         self.arrived_ids = set()
 
+        self.decision_wait_averages = []  # list of average waiting times(sum (seconds since current stop began per vehicle)/number of vehicles) at each decision point, for later averaging, counts consiquitive wait times
         # One network-wide stopped-vehicle count per step (snapshot, time-averaged later).
         self.queue_lengths = []
 
         # Sim time at the most recent recorded step. Used to charge vehicles
         # still in the network their time-so-far when the horizon cuts them off.
         self.last_sim_time = 0.0
+
+        # Captured on the first recorded step (TraCI is not connected yet at
+        # construction time, and is already closed by final-summary time).
+        self.sumo_version = None
 
         # Decision-outcome counters. Every decision point is exactly one type;
         # see record_decision for the classification.
@@ -74,12 +119,15 @@ class MetricsRecorder:
         current_time = traci.simulation.getTime()
         step_length = traci.simulation.getDeltaT()
         self.last_sim_time = current_time
+        if self.sumo_version is None:
+            self.sumo_version = traci.getVersion()[1]
 
         # Track vehicles entering the simulation this step.
         self.loaded_ids.update(traci.simulation.getLoadedIDList())
         for vehicle in traci.simulation.getDepartedIDList():
             self.departed_ids.add(vehicle)
             self.depart_times[vehicle] = current_time
+            self.final_edges[vehicle] = traci.vehicle.getRoute(vehicle)[-1]
 
         # Accumulate true waiting time and count the current network-wide queue.
         current_queue_length = 0
@@ -88,6 +136,11 @@ class MetricsRecorder:
                 current_queue_length += 1
                 self.waiting_accumulated[vehicle] = (
                     self.waiting_accumulated.get(vehicle, 0.0) + step_length
+                )
+            road = traci.vehicle.getRoadID(vehicle)
+            if not road.startswith(":") and road != self.final_edges.get(vehicle):
+                self.approach_time[vehicle] = (
+                    self.approach_time.get(vehicle, 0.0) + step_length
                 )
         self.queue_lengths.append(current_queue_length)
 
@@ -200,6 +253,8 @@ class MetricsRecorder:
         averaged over all recorded steps.
         """
         summary = self._trip_averages()
+        summary["sumo_version"] = self.sumo_version
+        summary["input_files"] = self.input_files
         summary["average_queue_length"] = (
             round(sum(self.queue_lengths) / len(self.queue_lengths), 2)
             if self.queue_lengths else None
@@ -213,6 +268,17 @@ class MetricsRecorder:
         summary["total_departed_vehicles"] = total_departed
         summary["loaded_but_never_departed"] = max(total_loaded - total_departed, 0)
         summary["still_running_at_end"] = max(total_departed - total_arrived, 0)
+        average_per_decision_wait_s = (
+            round(sum(self.decision_wait_averages) / len(self.decision_wait_averages), 2)
+            if len(self.decision_wait_averages) > 0 else 0
+        )
+        summary["average_per_decision_wait_s"] = average_per_decision_wait_s
+        # Fraction of loaded vehicles that actually finished their trip. A low
+        # rate means the completed-only ATT/AWT above are optimistic (they drop
+        # the worst-off, still-stuck vehicles) -- report it alongside them.
+        summary["completion_rate"] = (
+            round(total_arrived / total_loaded, 4) if total_loaded else None
+        )
 
         # Decision-outcome breakdown. "LLM-queried" excludes empty-intersection
         # no-ops, so the rates below describe only the steps where a decision was
@@ -244,6 +310,16 @@ class MetricsRecorder:
         # at the horizon, so late departures are not silently dropped.
         summary.update(self._cityflow_style_averages())
 
+        # Same population, but with LLMTSCS's clock (approach dwell only) --
+        # the number directly comparable to the LLMTSCS/paper ATT tables.
+        summary["cityflow_clock_att_s"] = (
+            round(
+                sum(self.approach_time.get(v, 0.0) for v in self.departed_ids)
+                / len(self.departed_ids), 2
+            )
+            if self.departed_ids else None
+        )
+
         # Population-faithful metrics from SUMO's own statistics (incl. the
         # never-inserted vehicles that the completed-trip averages above hide).
         summary.update(self._parse_sumo_statistics())
@@ -260,6 +336,27 @@ class MetricsRecorder:
             print(f"  {k}: {v}")
         print(f"  Saved to: {out_path}")
         return summary
+
+    def record_decision_wait(self):
+        """Sample the network-wide mean waiting time at a decision point.
+
+        Matches CityFlow's AWT: getWaitingTime (seconds since the current stop
+        began, resets on movement), averaged over only the vehicles currently
+        stopped (wait > 0), 0.0 when none are. Called per decision so
+        save_final_summary can average across decision points.
+        """
+        halted_waits = [
+            w for w in (
+                traci.vehicle.getWaitingTime(v) for v in traci.vehicle.getIDList()
+            )
+            if w > 0
+        ]
+        average_wait = (
+            sum(halted_waits) / len(halted_waits) if halted_waits else 0.0
+        )
+        if self.verbose:
+            print(f"average waiting time at decision point: {average_wait:.2f}s")
+        self.decision_wait_averages.append(average_wait)
 
     def record_decision(self, step, state_dict, prompt, llm_output,
                         previous_phase, final_phase, decision_type,

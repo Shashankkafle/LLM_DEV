@@ -5,12 +5,13 @@ intersection configs. It imports nothing from the rest of the project, so any
 module can import from it without risking a circular import.
 """
 
+from pathlib import Path
+
 # =============================================================================
 # Direction / movement reference maps
 # =============================================================================
 
 location_dict = {"N": "North", "S": "South", "E": "East", "W": "West"}
-location_dict_detail = {"N": "Northern", "S": "Southern", "E": "Eastern", "W": "Western"}
 
 # These movement maps are identical across every intersection config, so they
 # are defined once here and referenced from each config below.
@@ -194,14 +195,6 @@ STOP_SPEED_EARLY_QUEUE = 1.39
 
 
 # =============================================================================
-# Lane segmentation
-# =============================================================================
-
-# Each lane is split into this many distance segments from the stopline.
-LANE_SEGMENT_COUNT = 3
-
-
-# =============================================================================
 # SUMO binaries
 # =============================================================================
 
@@ -259,34 +252,42 @@ RERUNS_DIR_NAME = "reruns"
 STEP_SUMMARIES_FILENAME = "step_summaries.jsonl"
 FINAL_SUMMARY_FILENAME = "final_summary.json"
 DECISIONS_FILENAME = "decisions.jsonl"
-PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.json"
+PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.jsonl"
 
 REPLAY_EVENTS_FILENAME = "replay_record.jsonl"
 REPLAY_META_FILENAME = "replay_meta.json"
 
-# SUMO writes these on close when the statistics flags are passed (see
-# sumo_statistics_args). MetricsRecorder parses the statistic file for
-# population-faithful, cross-controller-comparable metrics.
+# SUMO writes these on close when the output flags below are passed. The
+# statistic file feeds MetricsRecorder's population-faithful summary fields;
+# tripinfo and queue feed the offline metric parser (utils/cal_offline.py).
 SUMO_TRIPINFO_FILENAME = "tripinfo.xml"
+SUMO_QUEUE_FILENAME = "queue_output.xml"
 SUMO_STATISTIC_FILENAME = "sumo_statistics.xml"
 
 
-def sumo_statistics_args(output_dir):
-    """SUMO CLI flags that emit trip statistics into output_dir.
+def sumo_metrics_args(output_dir):
+    """SUMO CLI flags for honest, cross-controller-comparable measurement.
 
-    These give canonical aggregate metrics -- mean travel time (incl. the wait
-    to be inserted), time loss, and inserted/running/waiting/teleported counts
-    -- so every controller is scored on the same honest, full-population basis.
-    Shared by every launcher (LLM, replay, baselines, CoLight eval) so they stay
-    in sync. This is only about emitting output; it does not change SUMO's
-    simulation behavior (teleport/insertion defaults are untouched).
+    Shared by every launcher (LLM, replay, baselines, CoLight eval) so they all
+    simulate and score under identical conditions. Two jobs, bundled:
+
+    1. Gridlock-honest behavior. ``--time-to-teleport -1`` disables SUMO's
+       default 300 s teleport, so vehicles stuck in a jam are NOT silently
+       removed -- which would understate congestion. This DOES change the
+       simulation (unlike a pure output flag); it is the point of a fair
+       congestion measurement.
+    2. Offline-metric output. tripinfo (with unfinished vehicles written too, so
+       late departures are charged to the horizon rather than dropped), per-lane
+       queue length in metres, and SUMO's own aggregate statistics file. These
+       are parsed by utils/cal_offline.py into ATT/AWT/AQL.
     """
-    from pathlib import Path
-
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     return [
+        "--time-to-teleport", "-1",
         "--tripinfo-output", str(output_dir / SUMO_TRIPINFO_FILENAME),
+        "--tripinfo-output.write-unfinished",
+        "--queue-output", str(output_dir / SUMO_QUEUE_FILENAME),
         "--statistic-output", str(output_dir / SUMO_STATISTIC_FILENAME),
         "--duration-log.statistics", "true",
     ]
@@ -313,8 +314,8 @@ COLIGHT_NUM_LANE_FEATURES = 8
 # Top-k nearest neighbours used to build each intersection's adjacency row.
 COLIGHT_TOP_K_ADJACENCY = 5
 
-# One decision per green window; equals PhaseHandler default_green_duration so the
-# RL cadence matches both the source (MIN_ACTION_TIME = MEASURE_TIME = 30) and the LLM.
+# Default number of training rounds (one episode each), matching the source
+# repo's run_colight.py default. Override per-run with --num_rounds.
 COLIGHT_NUM_ROUNDS = 100
 
 # Reward = COEFF * (per-intersection stopped-vehicle count), averaged over the window.
@@ -361,3 +362,17 @@ COLIGHT_AGENT_CONF = {
     "MIN_EPSILON": 0.2,
     "LOSS_FUNCTION": "mean_squared_error",
 }
+
+# Feature sets per variant (mirrors source LIST_STATE_FEATURE). adjacency_matrix MUST
+# stay last (the agent drops it with LIST_STATE_FEATURE[:-1]).
+COLIGHT_FEATURES = ["cur_phase", "lane_num_vehicle", "adjacency_matrix"]
+
+# Advanced CoLight: SAME CoLightAgent, different features (source run_advanced_colight.py).
+ADVANCED_COLIGHT_FEATURES = [
+    "cur_phase",
+    "traffic_movement_pressure_queue_efficient",
+    "lane_enter_running_part",
+    "adjacency_matrix",
+]
+# Source uses the same base agent conf for Advanced CoLight; copy so it can diverge later.
+ADVANCED_COLIGHT_AGENT_CONF = dict(COLIGHT_AGENT_CONF)
