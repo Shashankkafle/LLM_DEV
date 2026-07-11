@@ -93,6 +93,14 @@ so paper numbers = that code's behavior.
    Because all stochastic elements are pinned, **cfphys runs are fully
    deterministic: 5 seeds produced bit-identical results.** No error bars
    needed; any difference between cfphys runs is code/config/version, never noise.
+   2026-07-11: cfphys variants extended to all 22 `dataset/sumo_version`
+   networks (`make_cfphys_routes.py`), and the CoLight defaults in
+   `configurations.py` now point at them. Besides the dead-vType fix, this
+   removes the insertion phantom: with `departSpeed=0` every vehicle counted as
+   halting on its entry lane for exactly one step (a fake queue of 1, ~290 m
+   upstream), leaking into the advanced pressure feature, the CoLight reward,
+   MaxPressure, and the queue metrics. Prior sumo_version results (committed
+   CoLight training, Run results.xlsx) are NOT comparable to cfphys runs.
 4. **Insertion censoring on HZ-2 is structural.** `anon_4_4_hangzhou_real_5816`
    actually holds 6,984 vehicles. Even with cfphys insertion attributes, ~1,760
    (25%) never enter — with tau=2.0 the demand physically exceeds entry-edge
