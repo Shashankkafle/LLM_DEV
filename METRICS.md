@@ -185,6 +185,13 @@ unservable queues is part of what the experiment measures). CoLight:
 has no time index or blockage signal, so training on a fixed scheduled
 incident is memorization, not adaptation. Never pool the two.
 
+**Information-asymmetry control.** The LLM gets an explicit blockage section
+while MaxPressure/CoLight see only halting counts, so an LLM win conflates
+privileged information with reasoning. `runner.py --hide_blockage_info`
+injects the blockage physically but keeps it out of the prompt: the core
+matrix for any adaptation claim is LLM-with-info vs LLM-without-info vs
+baselines, all on the same scenario and seed.
+
 ## Which number for which comparison
 
 - Against LLMTSCS/paper tables: `cityflow_clock_att_s`,
