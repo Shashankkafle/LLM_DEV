@@ -278,6 +278,10 @@ class MetricsRecorder:
         summary = self._trip_averages()
         summary["sumo_version"] = self.sumo_version
         summary["input_files"] = self.input_files
+        # Blockage runs must be distinguishable in comparison tables: a run
+        # with an incident is a different experiment, not a worse controller.
+        if self.blockage_manager is not None:
+            summary["blockage_scenario"] = self.blockage_manager.scenario_name
         summary["average_queue_length"] = (
             round(sum(self.queue_lengths) / len(self.queue_lengths), 2)
             if self.queue_lengths else None

@@ -7,6 +7,7 @@ scaffolding in one place so the runners cannot drift apart: early-exit
 behavior, AWT sampling cadence, and the close-then-summarize order live here.
 """
 
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from configurations import (
     DEFAULT_START_PHASE,
     LOGS_DIR_NAME,
     PHASE_SEQUENCES_DIR_NAME,
+    BLOCKAGE_SCENARIO_COPY_FILENAME,
 )
 
 
@@ -33,7 +35,8 @@ def build_blockage_manager(scenario_path):
     if not scenario_path:
         return None, None
     scenario = load_scenario(scenario_path)
-    return scenario, BlockageManager(scenario["blockages"])
+    return scenario, BlockageManager(scenario["blockages"],
+                                     scenario_name=scenario["scenario_name"])
 
 
 def create_run_dirs(test_name):
@@ -66,6 +69,11 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
     leaves enough on disk to be replayed and re-scored.
     """
     records_dir, phase_sequence_dir = create_run_dirs(test_name)
+    # Copy the scenario into the run dir so the run stays reproducible even if
+    # the original scenario file later changes.
+    if run_meta.get("blockage_scenario"):
+        shutil.copy(run_meta["blockage_scenario"],
+                    records_dir / BLOCKAGE_SCENARIO_COPY_FILENAME)
     replay_recorder = ReplayRecorder(record_dir=records_dir, meta=run_meta)
     recorder = MetricsRecorder(run_dir=records_dir, verbose=verbose_metrics,
                                phase_names=list(conf["phases"].keys()),

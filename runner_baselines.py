@@ -18,7 +18,7 @@ import argparse
 
 import traci
 
-from runner_common import setup_run, run_control_loop
+from runner_common import setup_run, run_control_loop, build_blockage_manager
 from configurations import (
     INTERSECTION_CONFIGS,
     DEFAULT_INTERSECTION_CONFIG_NAME,
@@ -116,6 +116,10 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=None,
                         help="SUMO random seed. Default keeps SUMO's fixed "
                              "default (deterministic reruns).")
+    parser.add_argument("--blockage_scenario", type=str, default=None,
+                        help="Path to a blockage scenario JSON (see "
+                             "simulations/single_intersection/scenarios/). "
+                             "Omit for no blockages.")
     parser.add_argument(
         "--intersection_config",
         type=str,
@@ -129,6 +133,7 @@ def main(args):
     conf = INTERSECTION_CONFIGS[args.intersection_config]
     test_name = args.test_name or args.controller
 
+    _, blockage_manager = build_blockage_manager(args.blockage_scenario)
     run_meta = {
         "test_name": test_name,
         "controller": args.controller,
@@ -136,9 +141,11 @@ def main(args):
         "simulation_config": args.simulation_config,
         "intersection_config": args.intersection_config,
         "seed": args.seed,
+        "blockage_scenario": args.blockage_scenario,
     }
     ctx = setup_run(conf, test_name, args.simulation_config, run_meta,
-                    use_gui=args.use_gui, seed=args.seed)
+                    use_gui=args.use_gui, seed=args.seed,
+                    blockage_manager=blockage_manager)
     controller = build_controller(args.controller, conf, list(ctx.handlers))
 
     print(f"Controller    : {args.controller}")

@@ -146,11 +146,13 @@ class BlockageManager:
     runner, including replay.
     """
 
-    def __init__(self, blockages):
+    def __init__(self, blockages, scenario_name=None):
         # Validated scenario data; read-only after construction. Public so the
         # env can check lane attribution against the whole schedule, not just
-        # the currently-active subset.
+        # the currently-active subset. scenario_name is provenance: it ends up
+        # in final_summary.json so blockage runs are distinguishable in tables.
         self.schedule = blockages
+        self.scenario_name = scenario_name
         self._active = {}             # blockage_id -> blockage dict
         self._finished = set()        # blockage_ids past their window
         self._pending_obstacles = {}  # veh_id -> blockage awaiting placement

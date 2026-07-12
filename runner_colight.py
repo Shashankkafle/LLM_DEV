@@ -19,6 +19,7 @@ os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 import argparse
 import json
 import random
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -28,7 +29,7 @@ import numpy as np
 import traci
 
 from sumo_env import SumoEnv
-from runner_common import create_run_dirs
+from runner_common import create_run_dirs, build_blockage_manager
 from utils.tf_device import configure_tf_devices
 from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
@@ -39,6 +40,7 @@ from configurations import (
     DEFAULT_SIMULATION_STEPS,
     DEFAULT_START_PHASE,
     PHASE_SEQUENCES_DIR_NAME,
+    BLOCKAGE_SCENARIO_COPY_FILENAME,
     COLIGHT_AGENT_CONF,
     COLIGHT_FEATURES,
     ADVANCED_COLIGHT_AGENT_CONF,
@@ -148,6 +150,7 @@ def build_training_metadata(args, order, agent_conf):
             "simulation_steps": args.simulation_steps,
             "epochs": effective_epochs,
             "ablate_attention": args.ablate_attention,
+            "train_blockage_scenario": args.train_blockage_scenario,
             "reward_queue_coeff": COLIGHT_REWARD_QUEUE_COEFF,
             "top_k_adjacency": COLIGHT_TOP_K_ADJACENCY,
             "num_lane_features": COLIGHT_NUM_LANE_FEATURES,
@@ -309,10 +312,16 @@ def train(args, conf, records_dir, features, agent_conf):
     min_epsilon = agent_conf["MIN_EPSILON"]
     update_q_bar_freq = agent_conf["UPDATE_Q_BAR_FREQ"]
 
+    _, blockage_manager = build_blockage_manager(args.train_blockage_scenario)
+
     for r in range(args.num_rounds):
         print(f"\n========== {args.variant} training round {r}/{args.num_rounds - 1} ==========")
+        if blockage_manager is not None:
+            # Each round is a fresh SUMO session; a manager carrying last
+            # round's finished set would silently never re-fire the blockages.
+            blockage_manager.reset()
         env = SumoEnv(sumo_config=args.simulation_config, use_gui=args.use_gui,
-                      intersection_config=conf)
+                      intersection_config=conf, blockage_manager=blockage_manager)
         env.start_simulation()
         order = sorted(env.get_intersections())
 
@@ -395,9 +404,14 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_c
     phase_sequence_dir = records_dir / PHASE_SEQUENCES_DIR_NAME
     phase_sequence_dir.mkdir(parents=True, exist_ok=True)
 
+    _, blockage_manager = build_blockage_manager(args.blockage_scenario)
+    if args.blockage_scenario:
+        shutil.copy(args.blockage_scenario,
+                    records_dir / BLOCKAGE_SCENARIO_COPY_FILENAME)
+
     env = SumoEnv(sumo_config=args.simulation_config, use_gui=args.use_gui,
                   phase_sequence_dir=phase_sequence_dir, intersection_config=conf,
-                  output_dir=records_dir)
+                  output_dir=records_dir, blockage_manager=blockage_manager)
     env.start_simulation()
     order = sorted(env.get_intersections())
 
@@ -432,7 +446,8 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_c
 
     recorder = MetricsRecorder(run_dir=records_dir, verbose=False,
                                phase_names=list(conf["phases"].keys()),
-                               sumo_config=args.simulation_config)
+                               sumo_config=args.simulation_config,
+                               blockage_manager=blockage_manager)
     replay = ReplayRecorder(record_dir=records_dir, meta={
         "controller": args.variant,
         "mode": "eval",
@@ -440,6 +455,7 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_c
         "simulation_steps": args.simulation_steps,
         "simulation_config": args.simulation_config,
         "intersection_config": args.intersection_config,
+        "blockage_scenario": args.blockage_scenario,
         "training_metadata": trained_on,
     })
 
@@ -477,6 +493,15 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=None,
                         help="Override training EPOCHS (default uses COLIGHT_AGENT_CONF).")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--blockage_scenario", type=str, default=None,
+                        help="Blockage scenario JSON applied to the EVAL "
+                             "episode only (zero-shot robustness arm -- "
+                             "matches the LLM's zero-shot setting).")
+    parser.add_argument("--train_blockage_scenario", type=str, default=None,
+                        help="Blockage scenario JSON applied during TRAINING "
+                             "rounds. This is a separate 'trained-on-incident' "
+                             "arm: the policy sees the same scheduled incident "
+                             "every round. Never pool it with eval-only runs.")
     parser.add_argument("--use_gui", action="store_true", default=False)
     parser.add_argument("--ablate_attention", action="store_true", default=False,
                         help="Force self-only adjacency (no neighbor attention) -- ablation.")

@@ -98,7 +98,7 @@ def main(args):
     llm = LLM_Inference(llm_path=args.llm_path)
     llm.initialize_llm()
 
-    blockage_scenario, blockage_manager = build_blockage_manager(args.blockage_scenario)
+    _, blockage_manager = build_blockage_manager(args.blockage_scenario)
     run_meta = {
         "test_name": args.test_name,
         "simulation_steps": args.simulation_steps,

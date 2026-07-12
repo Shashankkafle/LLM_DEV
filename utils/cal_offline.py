@@ -26,7 +26,11 @@ import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from configurations import SUMO_TRIPINFO_FILENAME, SUMO_QUEUE_FILENAME
+from configurations import (
+    SUMO_TRIPINFO_FILENAME,
+    SUMO_QUEUE_FILENAME,
+    OBSTACLE_VEHICLE_PREFIX,
+)
 
 
 def _parse_tripinfo(tripinfo_file):
@@ -43,6 +47,11 @@ def _parse_tripinfo(tripinfo_file):
 
     for _event, elem in ET.iterparse(tripinfo_file, events=("end",)):
         if elem.tag != "tripinfo":
+            continue
+        # A blockage run's synthetic obstacle writes a tripinfo row too;
+        # it is infrastructure, not a trip.
+        if elem.get("id", "").startswith(OBSTACLE_VEHICLE_PREFIX):
+            elem.clear()
             continue
         try:
             duration = float(elem.get("duration", 0.0))

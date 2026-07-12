@@ -24,7 +24,10 @@ import json
 from pathlib import Path
 
 # (json key, column header, width). None value renders as "-".
+# The scenario column keeps blockage runs from being ranked against
+# blockage-free runs unnoticed -- an incident run is a different experiment.
 COLUMNS = [
+    ("blockage_scenario", "scenario", 12),
     ("cityflow_style_att_s", "CityFlow-ATT", 12),
     ("cityflow_style_awt_s", "CityFlow-AWT", 12),
     ("sumo_vehicles_finished", "finished", 9),

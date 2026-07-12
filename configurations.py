@@ -257,6 +257,10 @@ PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.jsonl"
 REPLAY_EVENTS_FILENAME = "replay_record.jsonl"
 REPLAY_META_FILENAME = "replay_meta.json"
 
+# A blockage run's scenario JSON is copied into its run dir under this name,
+# so the run stays reproducible even if the original scenario file changes.
+BLOCKAGE_SCENARIO_COPY_FILENAME = "blockage_scenario.json"
+
 # SUMO writes these on close when the output flags below are passed. The
 # statistic file feeds MetricsRecorder's population-faithful summary fields;
 # tripinfo and queue feed the offline metric parser (utils/cal_offline.py).
