@@ -1,3 +1,5 @@
+import os
+
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -11,11 +13,22 @@ from configurations import (
 
 class LLM_Inference:
     def __init__(self, llm_path):
-        self.llm_path = llm_path
+        self.llm_path = self._resolve_snapshot_path(llm_path)
         self.model = None
         self.tokenizer = None
         self.model_family = None
         self._logged_first_prompt = False
+
+    @staticmethod
+    def _resolve_snapshot_path(llm_path):
+        # A HF cache folder (models--Org--Name) holds the real files under
+        # snapshots/<hash>/ — point transformers at that inner directory.
+        snapshots_dir = os.path.join(llm_path, "snapshots")
+        if os.path.isdir(snapshots_dir):
+            hashes = sorted(os.listdir(snapshots_dir))
+            if hashes:
+                return os.path.join(snapshots_dir, hashes[0])
+        return llm_path
 
     def initialize_llm(self):
         if torch.cuda.is_available():
@@ -112,8 +125,6 @@ class LLM_Inference:
                 do_sample=LLM_DO_SAMPLE
             )
 
-        
-        # CORRECTED SLICING HERE
         input_length = inputs.input_ids.shape[1]
         generated_tokens = outputs[0, input_length:]
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)

@@ -15,23 +15,15 @@ Usage:
         --test_name maxpressure_hz4x4
 """
 import argparse
-from datetime import datetime
-from pathlib import Path
 
 import traci
 
-from sumo_env import SumoEnv
-from utils.phase_handler import PhaseHandler
-from utils.metrics_recorder import MetricsRecorder
-from utils.replay_recorder import ReplayRecorder
+from runner_common import setup_run, run_control_loop
 from configurations import (
     INTERSECTION_CONFIGS,
     DEFAULT_INTERSECTION_CONFIG_NAME,
     DEFAULT_SIMULATION_STEPS,
     DEFAULT_SIMULATION_CONFIG,
-    DEFAULT_START_PHASE,
-    LOGS_DIR_NAME,
-    PHASE_SEQUENCES_DIR_NAME,
 )
 
 
@@ -121,6 +113,9 @@ def parse_args():
     parser.add_argument("--simulation_steps", type=int, default=DEFAULT_SIMULATION_STEPS)
     parser.add_argument("--simulation_config", type=str, default=DEFAULT_SIMULATION_CONFIG)
     parser.add_argument("--use_gui", action="store_true")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="SUMO random seed. Default keeps SUMO's fixed "
+                             "default (deterministic reruns).")
     parser.add_argument(
         "--intersection_config",
         type=str,
@@ -133,60 +128,29 @@ def parse_args():
 def main(args):
     conf = INTERSECTION_CONFIGS[args.intersection_config]
     test_name = args.test_name or args.controller
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    records_dir = Path(LOGS_DIR_NAME) / f"{test_name}_{timestamp}"
-    phase_sequence_dir = records_dir / PHASE_SEQUENCES_DIR_NAME
-    phase_sequence_dir.mkdir(parents=True, exist_ok=True)
 
-    run_details = {
+    run_meta = {
         "test_name": test_name,
         "controller": args.controller,
         "simulation_steps": args.simulation_steps,
         "simulation_config": args.simulation_config,
         "intersection_config": args.intersection_config,
+        "seed": args.seed,
     }
-    replay_recorder = ReplayRecorder(record_dir=records_dir, meta=run_details)
-    recorder = MetricsRecorder(run_dir=records_dir, verbose=False,
-                               phase_names=list(conf["phases"].keys()))
-    env = SumoEnv(
-        sumo_config=args.simulation_config, use_gui=args.use_gui,
-        phase_sequence_dir=phase_sequence_dir, intersection_config=conf,
-        output_dir=records_dir,
-    )
-    env.start_simulation()
-
-    intersection_ids = env.get_intersections()
-    controller = build_controller(args.controller, conf, intersection_ids)
-    handlers = {
-        iid: PhaseHandler(env=env, conf=conf, intersection_id=iid,
-                          start_phase=DEFAULT_START_PHASE,
-                          replay_recorder=replay_recorder)
-        for iid in intersection_ids
-    }
+    ctx = setup_run(conf, test_name, args.simulation_config, run_meta,
+                    use_gui=args.use_gui, seed=args.seed)
+    controller = build_controller(args.controller, conf, list(ctx.handlers))
 
     print(f"Controller    : {args.controller}")
     print(f"SUMO config   : {args.simulation_config}")
-    print(f"Intersections : {len(intersection_ids)}")
-    print(f"Output dir    : {records_dir}")
+    print(f"Intersections : {len(ctx.handlers)}")
+    print(f"Output dir    : {ctx.records_dir}")
     print("-" * 50)
 
-    try:
-        for step in range(args.simulation_steps):
-            env.step()
-            recorder.record_step_summary(step)
-            for intersection_id, handler in handlers.items():
-                handler.step()
-                if handler.switch_phase:
-                    next_phase = controller.choose(intersection_id, handler)
-                    handler.activate_phase(next_phase)
+    def decide(step, intersection_id, handler):
+        return controller.choose(intersection_id, handler)
 
-            if traci.simulation.getMinExpectedNumber() <= 0:
-                print(f"No more vehicles expected at step {step}, stopping early.")
-                break
-    finally:
-        # Close SUMO first so it flushes the statistics file, then summarize.
-        env.close()
-        recorder.save_final_summary()
+    run_control_loop(ctx, args.simulation_steps, decide)
 
 
 if __name__ == "__main__":
