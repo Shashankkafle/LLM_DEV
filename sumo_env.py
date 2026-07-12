@@ -5,6 +5,7 @@ from configurations import (
     SUMO_GUI_BINARY,
     STOP_SPEED_EARLY_QUEUE,
     PHASE_SEQUENCE_FILENAME_SUFFIX,
+    OBSTACLE_VEHICLE_PREFIX,
     sumo_metrics_args,
 )
 from utils.general_utils import append_jsonl, get_phase_name
@@ -18,12 +19,13 @@ movement_to_approach = {
 class SumoEnv:
     def __init__(self, sumo_config, phase_sequence_dir=None, use_gui=False,
                  intersection_config=INTERSECTION_CONFIG, output_dir=None,
-                 seed=None):
+                 seed=None, blockage_manager=None):
         self.sumo_config = sumo_config
         self.use_gui = use_gui
         self.intersection_config = intersection_config
         self.approach_mapping = None
         self.set_phase_sequence_dir = phase_sequence_dir
+        self.blockage_manager = blockage_manager
         if self.use_gui:
             sumo_binary = SUMO_GUI_BINARY
         else:
@@ -34,6 +36,13 @@ class SumoEnv:
         # cross-controller-comparable metrics. SUMO flushes these on close.
         if output_dir is not None:
             self.cmd += sumo_metrics_args(output_dir)
+        # Blockage runs must never teleport: under SUMO's default 300s
+        # time-to-teleport the frozen obstacle deletes ITSELF mid-window.
+        # sumo_metrics_args already disables teleporting for measured runs;
+        # this covers the remaining path (no output_dir, e.g. CoLight
+        # training). Never add the flag twice -- SUMO errors on duplicates.
+        if blockage_manager is not None and "--time-to-teleport" not in self.cmd:
+            self.cmd += ["--time-to-teleport", "-1"]
         # None keeps SUMO's fixed default seed (deterministic reruns).
         if seed is not None:
             self.cmd += ["--seed", str(seed)]
@@ -103,6 +112,8 @@ class SumoEnv:
 
     def step(self):
         traci.simulationStep()
+        if self.blockage_manager is not None:
+            self.blockage_manager.step(self.get_current_step())
 
     def start_simulation(self):
         traci.start(self.cmd)
@@ -115,6 +126,24 @@ class SumoEnv:
         mapped_lanes = sum(len(lanes) for lanes in self.approach_mapping.values())
         print(f"SumoEnv initialized: {len(self.intersection_ids)} intersections, "
               f"{mapped_lanes} approach lanes mapped")
+        if self.blockage_manager is not None:
+            self.blockage_manager.validate_against_network()
+            self._validate_blockage_lanes()
+
+    def _validate_blockage_lanes(self):
+        """Reject scenarios whose blocked lanes this env cannot attribute to an
+        intersection approach: an unattributable blockage would jam traffic
+        while silently missing from every prompt and state flag."""
+        attributable = set()
+        for lanes in self.approach_mapping.values():
+            attributable.update(lanes)
+        for blockage in self.blockage_manager.schedule:
+            if blockage["lane_id"] not in attributable:
+                raise ValueError(
+                    f"Blockage '{blockage['blockage_id']}' targets lane "
+                    f"{blockage['lane_id']}, which does not feed any traffic "
+                    f"light in this network -- it would block traffic without "
+                    f"ever appearing in prompts or state.")
 
     def get_current_step(self):
         return traci.simulation.getCurrentTime() // 1000  # Convert milliseconds to seconds
@@ -164,8 +193,12 @@ class SumoEnv:
 
         controlled_lanes = list(set(traci.trafficlight.getControlledLanes(intersection_id)))
         v_stop = STOP_SPEED_EARLY_QUEUE
+        blocked_lanes = (
+            set(self.blockage_manager.get_blocked_lane_ids())
+            if self.blockage_manager is not None else set()
+        )
 
-        lane_data = {}  
+        lane_data = {}
 
         for lane_id in controlled_lanes:
             lane_length = traci.lane.getLength(lane_id)
@@ -177,6 +210,11 @@ class SumoEnv:
             segment_3_count = 0
 
             for veh_id in veh_ids:
+                # The synthetic obstacle is infrastructure, not traffic: the
+                # blockage reaches the prompt via the blockage section, not as
+                # a phantom queued vehicle.
+                if veh_id.startswith(OBSTACLE_VEHICLE_PREFIX):
+                    continue
                 speed = traci.vehicle.getSpeed(veh_id)
 
                 if speed < v_stop:
@@ -201,7 +239,11 @@ class SumoEnv:
                     "segment_1": segment_1_count,
                     "segment_2": segment_2_count,
                     "segment_3": segment_3_count
-                }
+                },
+                # Rides along into movement_states and decisions.jsonl. The
+                # prompt builder reads only the count keys, so this cannot
+                # change any prompt by itself.
+                "blocked": lane_id in blocked_lanes,
             }
 
         state["lane_states"] = lane_data
@@ -231,7 +273,49 @@ class SumoEnv:
                 agg[lane_approach]["segments"]["segment_1"] += d["segments"]["segment_1"]
                 agg[lane_approach]["segments"]["segment_2"] += d["segments"]["segment_2"]
                 agg[lane_approach]["segments"]["segment_3"] += d["segments"]["segment_3"]
-                agg[lane_approach]["lanes"][lane_id]         = d   
+                agg[lane_approach]["lanes"][lane_id]         = d
             state["movement_states"][movement_name] = agg
 
         return state
+
+    def describe_blockages(self, intersection_id):
+        """Active blockages on this intersection's lanes, translated into the
+        prompt's vocabulary (the prompt never sees raw lane IDs).
+
+        Returns a list of dicts {lane_id, approach, movement, segment, method,
+        severity}. movement is None for lanes outside every phase (e.g. the
+        always-green right-turn lanes); segment uses the same stop-line
+        distance boundaries as get_state.
+        """
+        if self.blockage_manager is None:
+            return []
+        approach_map = self.approach_mapping[intersection_id]
+        descriptions = []
+        for blockage in self.blockage_manager.get_active_blockages():
+            lane_id = blockage["lane_id"]
+            if lane_id not in approach_map:
+                continue  # belongs to another intersection
+            movement = next(
+                (name for name, lanes in self.movement_lane_map[intersection_id].items()
+                 if lane_id in lanes),
+                None,
+            )
+            descriptions.append({
+                "lane_id": lane_id,
+                "approach": approach_map[lane_id],
+                "movement": movement,
+                "segment": self._segment_from_stopline(blockage["position"], lane_id),
+                "method": blockage["method"],
+                "severity": blockage["severity"],
+            })
+        return descriptions
+
+    def _segment_from_stopline(self, distance_to_stopline, lane_id):
+        """Same segment boundaries as get_state (Seg1 = 0-L/10, Seg2 = L/10-L/3,
+        Seg3 = rest), so the blockage section and the observation agree."""
+        lane_length = traci.lane.getLength(lane_id)
+        if distance_to_stopline <= lane_length / 10:
+            return 1
+        if distance_to_stopline <= lane_length / 3:
+            return 2
+        return 3

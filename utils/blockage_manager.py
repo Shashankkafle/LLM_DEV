@@ -147,7 +147,10 @@ class BlockageManager:
     """
 
     def __init__(self, blockages):
-        self._schedule = blockages
+        # Validated scenario data; read-only after construction. Public so the
+        # env can check lane attribution against the whole schedule, not just
+        # the currently-active subset.
+        self.schedule = blockages
         self._active = {}             # blockage_id -> blockage dict
         self._finished = set()        # blockage_ids past their window
         self._pending_obstacles = {}  # veh_id -> blockage awaiting placement
@@ -169,7 +172,7 @@ class BlockageManager:
         every lane must exist, and every obstacle position must fall inside
         its lane."""
         import traci
-        for blockage in self._schedule:
+        for blockage in self.schedule:
             lane_length = traci.lane.getLength(blockage["lane_id"])
             if (blockage["method"] == BLOCKAGE_METHOD_OBSTACLE
                     and blockage["position"] > lane_length):
@@ -180,7 +183,7 @@ class BlockageManager:
 
     def step(self, current_step):
         to_activate, to_deactivate, expired = schedule_transitions(
-            self._schedule, current_step, set(self._active), self._finished)
+            self.schedule, current_step, set(self._active), self._finished)
         for blockage in expired:
             self._finished.add(blockage["blockage_id"])
         for blockage in to_activate:
