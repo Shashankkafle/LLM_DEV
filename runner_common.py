@@ -7,6 +7,7 @@ scaffolding in one place so the runners cannot drift apart: early-exit
 behavior, AWT sampling cadence, and the close-then-summarize order live here.
 """
 
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -16,11 +17,26 @@ from sumo_env import SumoEnv
 from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
+from utils.blockage_manager import BlockageManager, load_scenario
 from configurations import (
     DEFAULT_START_PHASE,
     LOGS_DIR_NAME,
     PHASE_SEQUENCES_DIR_NAME,
+    BLOCKAGE_SCENARIO_COPY_FILENAME,
 )
+
+
+def build_blockage_manager(scenario_path):
+    """Load a blockage scenario and build its manager.
+
+    Returns (scenario_dict, manager), or (None, None) when no scenario is
+    requested -- so every runner wires blockages identically.
+    """
+    if not scenario_path:
+        return None, None
+    scenario = load_scenario(scenario_path)
+    return scenario, BlockageManager(scenario["blockages"],
+                                     scenario_name=scenario["scenario_name"])
 
 
 def create_run_dirs(test_name):
@@ -46,20 +62,27 @@ class RunContext:
 
 
 def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
-              seed=None, verbose_metrics=False):
+              seed=None, verbose_metrics=False, blockage_manager=None):
     """Build the run stack every controller shares.
 
     run_meta is written to replay_meta.json up front so a crashed run still
     leaves enough on disk to be replayed and re-scored.
     """
     records_dir, phase_sequence_dir = create_run_dirs(test_name)
+    # Copy the scenario into the run dir so the run stays reproducible even if
+    # the original scenario file later changes.
+    if run_meta.get("blockage_scenario"):
+        shutil.copy(run_meta["blockage_scenario"],
+                    records_dir / BLOCKAGE_SCENARIO_COPY_FILENAME)
     replay_recorder = ReplayRecorder(record_dir=records_dir, meta=run_meta)
     recorder = MetricsRecorder(run_dir=records_dir, verbose=verbose_metrics,
                                phase_names=list(conf["phases"].keys()),
-                               sumo_config=simulation_config)
+                               sumo_config=simulation_config,
+                               blockage_manager=blockage_manager)
     env = SumoEnv(sumo_config=simulation_config, use_gui=use_gui,
                   phase_sequence_dir=phase_sequence_dir,
-                  intersection_config=conf, output_dir=records_dir, seed=seed)
+                  intersection_config=conf, output_dir=records_dir, seed=seed,
+                  blockage_manager=blockage_manager)
     env.start_simulation()
     handlers = {
         intersection_id: PhaseHandler(env=env, conf=conf,

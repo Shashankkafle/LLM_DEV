@@ -257,6 +257,10 @@ PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.jsonl"
 REPLAY_EVENTS_FILENAME = "replay_record.jsonl"
 REPLAY_META_FILENAME = "replay_meta.json"
 
+# A blockage run's scenario JSON is copied into its run dir under this name,
+# so the run stays reproducible even if the original scenario file changes.
+BLOCKAGE_SCENARIO_COPY_FILENAME = "blockage_scenario.json"
+
 # SUMO writes these on close when the output flags below are passed. The
 # statistic file feeds MetricsRecorder's population-faithful summary fields;
 # tripinfo and queue feed the offline metric parser (utils/cal_offline.py).
@@ -291,6 +295,27 @@ def sumo_metrics_args(output_dir):
         "--statistic-output", str(output_dir / SUMO_STATISTIC_FILENAME),
         "--duration-log.statistics", "true",
     ]
+
+
+# =============================================================================
+# Lane blockage injection (utils/blockage_manager.py)
+# =============================================================================
+
+BLOCKAGE_METHOD_OBSTACLE = "obstacle_vehicle"
+BLOCKAGE_METHOD_SPEED = "speed_restriction"
+
+# Obstacle vehicles are named "<prefix><blockage_id>". Metrics and state
+# extraction filter this prefix so the synthetic vehicle is never counted as
+# traffic. Lane-level halting counts (MaxPressure, CoLight reward) cannot
+# filter by id and DO see the obstacle as one stopped vehicle -- documented
+# in METRICS.md.
+OBSTACLE_VEHICLE_PREFIX = "obstacle_"
+
+# Minimum clear distance (m) around the target position before moveTo places
+# the obstacle. Placing onto an occupied spot "succeeds" by overlapping
+# vehicles, which either reports a collision every step (collision.action=warn)
+# or gets the obstacle deleted one step later (action=teleport, SUMO default).
+OBSTACLE_CLEARANCE_M = 10.0
 
 
 # =============================================================================

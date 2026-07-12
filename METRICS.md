@@ -138,6 +138,60 @@ Table 11 template ("Allowed lanes:", with a "Note:" block) is the GPT-4 path
 (`models/chatgpt.py`), NOT what the LightGPT eval uses (`my_utils.getPrompt`,
 "Relieves:", no Note) — match the code, not the PDF.
 
+## Blockage runs (`--blockage_scenario`)
+
+A run with a lane blockage is a **different experiment**, not a worse
+controller. Provenance: `final_summary.json` gains `blockage_scenario` (the
+scenario name), every `step_summaries.jsonl` line gains `blocked_lanes`, the
+scenario JSON is copied into the run dir, and `compare_controllers.py` shows a
+scenario column. Never rank blockage and blockage-free runs in one table
+without that column.
+
+**Obstacle accounting.** The `obstacle_vehicle` method inserts a real (frozen)
+vehicle. It is filtered out of every per-vehicle MetricsRecorder metric (queue
+counts, accumulated waiting, trip averages, CityFlow-style averages,
+per-decision AWT, completion accounting), out of `get_state` counts, and out
+of `cal_offline`'s tripinfo parse. It CANNOT be filtered from:
+
+- lane-level halting counts: MaxPressure pressure, the CoLight queue reward,
+  and the queue-output AQL each see +1 on the blocked lane for the whole
+  window (defensible: a real sensor would also see a stopped vehicle);
+- SUMO's own statistics: `sumo_trip_count` / `sumo_mean_trip_duration_s` /
+  `sumo_effective_att_s` / `sumo_vehicles_inserted|finished` absorb one
+  synthetic ~window-long trip per obstacle.
+
+**Which numbers to quote under blockage.** `cityflow_style_att_s` +
+`completion_rate` (in-flight vehicles are charged their time-so-far, so
+trapped vehicles are not dropped). `sumo_effective_att_s` and
+`average_travel_time_s` are completed-only and biased DOWN under blockage --
+they drop exactly the trapped, worst-off vehicles. Once the blockage queue
+spills back to the entry edge, new demand piles up invisibly in SUMO's
+insertion queue: quote `sumo_vehicles_not_inserted` / `sumo_mean_depart_delay_s`
+alongside anything else. Blockage runs are SUMO-internal comparisons only --
+`cityflow_*` names denote the averaging convention, not paper comparability
+(the paper has no blockage counterpart).
+
+**Behavioral notes.** Teleporting is disabled on every measured run already;
+blockage runs also disable it when there is no output dir (CoLight training),
+because SUMO's default 300 s teleport deletes the frozen obstacle mid-window
+(verified). Blockage runs never early-stop -- trapped or never-inserted
+vehicles keep `getMinExpectedNumber() > 0` -- so they run the full horizon.
+Trapped vehicles count as `early_queued` in prompts and features by design;
+the prompt's blockage section states that those counts include unservable
+vehicles, while MaxPressure/CoLight see only the raw numbers (chasing
+unservable queues is part of what the experiment measures). CoLight:
+`--blockage_scenario` applies to eval only (zero-shot arm, matching the LLM);
+`--train_blockage_scenario` is a separate trained-on-incident arm -- the state
+has no time index or blockage signal, so training on a fixed scheduled
+incident is memorization, not adaptation. Never pool the two.
+
+**Information-asymmetry control.** The LLM gets an explicit blockage section
+while MaxPressure/CoLight see only halting counts, so an LLM win conflates
+privileged information with reasoning. `runner.py --hide_blockage_info`
+injects the blockage physically but keeps it out of the prompt: the core
+matrix for any adaptation claim is LLM-with-info vs LLM-without-info vs
+baselines, all on the same scenario and seed.
+
 ## Which number for which comparison
 
 - Against LLMTSCS/paper tables: `cityflow_clock_att_s`,
