@@ -294,6 +294,27 @@ def sumo_metrics_args(output_dir):
 
 
 # =============================================================================
+# Lane blockage injection (utils/blockage_manager.py)
+# =============================================================================
+
+BLOCKAGE_METHOD_OBSTACLE = "obstacle_vehicle"
+BLOCKAGE_METHOD_SPEED = "speed_restriction"
+
+# Obstacle vehicles are named "<prefix><blockage_id>". Metrics and state
+# extraction filter this prefix so the synthetic vehicle is never counted as
+# traffic. Lane-level halting counts (MaxPressure, CoLight reward) cannot
+# filter by id and DO see the obstacle as one stopped vehicle -- documented
+# in METRICS.md.
+OBSTACLE_VEHICLE_PREFIX = "obstacle_"
+
+# Minimum clear distance (m) around the target position before moveTo places
+# the obstacle. Placing onto an occupied spot "succeeds" by overlapping
+# vehicles, which either reports a collision every step (collision.action=warn)
+# or gets the obstacle deleted one step later (action=teleport, SUMO default).
+OBSTACLE_CLEARANCE_M = 10.0
+
+
+# =============================================================================
 # CoLight RL baseline (additive -- does not affect the LLM path)
 #
 # CoLight is a graph-attention DQN lifted verbatim from
