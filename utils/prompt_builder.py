@@ -3,7 +3,13 @@
 The observation format (block order, wording, spacing, and the quoted direction
 names on the Segment lines) is kept byte-identical to what earlier runs used and
 what LightGPT-style fine-tunes expect. Do not reformat it casually.
+
+INVARIANT: with no active blockages the returned prompt is byte-identical to
+what it was before the blockage feature existed, so old and new runs stay
+comparable. tests/test_prompt_builder.py pins this.
 """
+
+from configurations import MOVEMENT_TYPES, BLOCKAGE_METHOD_OBSTACLE
 
 # Fixed presentation of the phase blocks: block order AND direction order within
 # each block, exactly as past runs and the fine-tuned models saw them. Kept as an
@@ -49,8 +55,48 @@ def build_observation(state_dict: dict) -> str:
     )
 
 
-def get_prompt(state_dict: dict) -> str:
+def _blockage_line(blockage: dict) -> str:
+    """One bullet for a blockage description (from SumoEnv.describe_blockages),
+    in the prompt's own vocabulary -- approach + lane role + segment, never raw
+    lane IDs. The method wording is kept verbatim from the source repo."""
+    approach = blockage["approach"]
+    movement = blockage["movement"]
+    if movement is not None:
+        # "ETWT" + approach "West" -> movement code "WT" -> "through".
+        code = next(c for c in (movement[:2], movement[2:])
+                    if c[0] == approach[0])
+        lane_role = f"{MOVEMENT_TYPES[code]} lane (signal {movement})"
+    else:
+        lane_role = "right-turn lane (not served by any signal)"
+    if blockage["method"] == BLOCKAGE_METHOD_OBSTACLE:
+        cause = "stopped vehicle — full blockage"
+    else:
+        cause = f"speed restriction — {int(blockage['severity'] * 100)}% reduction"
+    return f"- {approach} approach {lane_role}, segment {blockage['segment']}: {cause}."
+
+
+def build_blockage_section(blockages) -> str:
+    """Renders active blockage descriptions as a prompt section; '' when there
+    are none, which is what keeps no-blockage prompts byte-identical."""
+    if not blockages:
+        return ""
+    lines = [
+        "LANE BLOCKAGE CONTEXT",
+        "The following lane blockages are currently active and restrict vehicle flow:",
+    ]
+    lines += [_blockage_line(b) for b in blockages]
+    lines.append(
+        "On blocked lanes, the queued counts above INCLUDE vehicles trapped "
+        "behind the blockage that cannot reach the intersection until it clears."
+    )
+    return "\n".join(lines)
+
+
+def get_prompt(state_dict: dict, blockages=None) -> str:
     observation_text = build_observation(state_dict)
+    blockage_section = build_blockage_section(blockages)
+    if blockage_section:
+        blockage_section = f"\n{blockage_section}\n\n"
     return (
         "A traffic light regulates a four-section intersection with northern, southern, eastern, and western "
         "sections, each containing two lanes: one for through traffic and one for left-turns. Each lane is "
@@ -64,6 +110,7 @@ def get_prompt(state_dict: dict) -> str:
         "- The number of early queued vehicles of the allowed lanes of each signal.\n"
         "- The number of approaching vehicles in different segments of the allowed lanes of each signal.\n\n"
         f"{observation_text}\n"
+        f"{blockage_section}"
         "Please answer:\n"
         "Which is the most effective traffic signal that will most significantly improve the traffic "
         "condition during the next phase?\n\n"

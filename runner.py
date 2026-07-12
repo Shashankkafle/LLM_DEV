@@ -10,7 +10,7 @@ import re
 import time
 
 from models_inference.LLM.open_llm import LLM_Inference
-from runner_common import setup_run, run_control_loop
+from runner_common import setup_run, run_control_loop, build_blockage_manager
 from utils.prompt_builder import get_prompt
 from configurations import (
     INTERSECTION_CONFIGS,
@@ -32,6 +32,10 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=None,
                         help="SUMO random seed. Default keeps SUMO's fixed "
                              "default (deterministic reruns).")
+    parser.add_argument("--blockage_scenario", type=str, default=None,
+                        help="Path to a blockage scenario JSON (see "
+                             "simulations/single_intersection/scenarios/). "
+                             "Omit for no blockages.")
     parser.add_argument(
         "--intersection_config",
         type=str,
@@ -94,6 +98,7 @@ def main(args):
     llm = LLM_Inference(llm_path=args.llm_path)
     llm.initialize_llm()
 
+    blockage_scenario, blockage_manager = build_blockage_manager(args.blockage_scenario)
     run_meta = {
         "test_name": args.test_name,
         "simulation_steps": args.simulation_steps,
@@ -101,9 +106,11 @@ def main(args):
         "llm_path": args.llm_path,
         "intersection_config": args.intersection_config,
         "seed": args.seed,
+        "blockage_scenario": args.blockage_scenario,
     }
     ctx = setup_run(conf, args.test_name, args.simulation_config, run_meta,
-                    use_gui=args.use_gui, seed=args.seed, verbose_metrics=True)
+                    use_gui=args.use_gui, seed=args.seed, verbose_metrics=True,
+                    blockage_manager=blockage_manager)
 
     def decide(step, intersection_id, handler):
         state_data = ctx.env.get_state(intersection_id)
@@ -121,7 +128,8 @@ def main(args):
             extracted_signal = None
             next_phase = previous_phase
         else:
-            prompt = get_prompt(state_dict=state_data)
+            prompt = get_prompt(state_dict=state_data,
+                                blockages=ctx.env.describe_blockages(intersection_id))
             start_time = time.time()
             llm_output = llm.inference(prompt)
             latency_ms = (time.time() - start_time) * 1000
