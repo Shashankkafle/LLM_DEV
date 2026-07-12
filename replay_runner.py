@@ -48,8 +48,10 @@ from configurations import (
     SUMO_GUI_BINARY,
     RERUNS_DIR_NAME,
     REPLAY_META_FILENAME,
+    BLOCKAGE_SCENARIO_COPY_FILENAME,
     sumo_metrics_args,
 )
+from utils.blockage_manager import BlockageManager, load_scenario
 from utils.metrics_recorder import MetricsRecorder
 
 # metrics_recorder.py imports configurations.MIN_SPEED directly, so
@@ -118,6 +120,27 @@ def _load_legacy_schedule(record_path: Path):
         phase_schedule[step] = value if isinstance(value, list) else [value]
 
     return phase_schedule, run_details
+
+
+def load_blockage_manager(schedule_path: Path, run_details):
+    """Rebuild the original run's blockage manager for the rerun.
+
+    Without this, a blockage run would silently replay blockage-free physics
+    under the recorded phase schedule, defeating the re-scoring purpose.
+    Prefers the scenario copy inside the run dir (reproducible even if the
+    original scenario file changed); falls back to the recorded path.
+    """
+    scenario_copy = schedule_path.parent / BLOCKAGE_SCENARIO_COPY_FILENAME
+    if scenario_copy.exists():
+        source = scenario_copy
+    elif run_details.get("blockage_scenario"):
+        source = run_details["blockage_scenario"]
+    else:
+        return None
+    scenario = load_scenario(source)
+    print(f"Blockage      : {scenario['scenario_name']} (from {source})")
+    return BlockageManager(scenario["blockages"],
+                           scenario_name=scenario["scenario_name"])
 
 
 def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None, seed=None):
@@ -193,14 +216,22 @@ def main():
     print(f"SUMO command  : {' '.join(sumo_cmd)}")
     print("-" * 50)
 
+    blockage_manager = load_blockage_manager(schedule_path, run_details)
     recorder = MetricsRecorder(run_dir=run_dir, verbose=True,
-                               sumo_config=sumocfg_path)
+                               sumo_config=sumocfg_path,
+                               blockage_manager=blockage_manager)
 
     traci.start(sumo_cmd)
+    if blockage_manager is not None:
+        blockage_manager.validate_against_network()
 
     try:
         for step in range(total_steps):
             traci.simulationStep()
+            # Same clock as the live runs: SumoEnv ticks the manager with
+            # sim seconds, not the 0-based loop variable.
+            if blockage_manager is not None:
+                blockage_manager.step(int(traci.simulation.getTime()))
 
             # Apply any scheduled phase overrides for this exact step. A step may
             # hold several events -- one per intersection that switched on it.
