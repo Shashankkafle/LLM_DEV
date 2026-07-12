@@ -6,7 +6,9 @@ what LightGPT-style fine-tunes expect. Do not reformat it casually.
 
 INVARIANT: with no active blockages the returned prompt is byte-identical to
 what it was before the blockage feature existed, so old and new runs stay
-comparable. tests/test_prompt_builder.py pins this.
+comparable. tests/test_prompt_builder.py pins this. Blockage sections (approach
+side and exit side) are pure insertions before "Please answer:" and vanish
+entirely when their lists are empty.
 """
 
 from configurations import MOVEMENT_TYPES, BLOCKAGE_METHOD_OBSTACLE
@@ -55,10 +57,18 @@ def build_observation(state_dict: dict) -> str:
     )
 
 
+def _cause(blockage: dict) -> str:
+    """Shared method wording for both blockage sections. Kept verbatim from the
+    source repo -- the approach section's bytes are pinned by golden tests."""
+    if blockage["method"] == BLOCKAGE_METHOD_OBSTACLE:
+        return "stopped vehicle — full blockage"
+    return f"speed restriction — {int(blockage['severity'] * 100)}% reduction"
+
+
 def _blockage_line(blockage: dict) -> str:
     """One bullet for a blockage description (from SumoEnv.describe_blockages),
     in the prompt's own vocabulary -- approach + lane role + segment, never raw
-    lane IDs. The method wording is kept verbatim from the source repo."""
+    lane IDs."""
     approach = blockage["approach"]
     movement = blockage["movement"]
     if movement is not None:
@@ -68,11 +78,7 @@ def _blockage_line(blockage: dict) -> str:
         lane_role = f"{MOVEMENT_TYPES[code]} lane (signal {movement})"
     else:
         lane_role = "right-turn lane (not served by any signal)"
-    if blockage["method"] == BLOCKAGE_METHOD_OBSTACLE:
-        cause = "stopped vehicle — full blockage"
-    else:
-        cause = f"speed restriction — {int(blockage['severity'] * 100)}% reduction"
-    return f"- {approach} approach {lane_role}, segment {blockage['segment']}: {cause}."
+    return f"- {approach} approach {lane_role}, segment {blockage['segment']}: {_cause(blockage)}."
 
 
 def build_blockage_section(blockages) -> str:
@@ -92,11 +98,63 @@ def build_blockage_section(blockages) -> str:
     return "\n".join(lines)
 
 
-def get_prompt(state_dict: dict, blockages=None) -> str:
+# ---------------------------------------------------------------------------
+# Exit-side (upstream controller) blockage wording. Unlike the approach section
+# above -- whose bytes are pinned for comparability with logged runs -- this
+# wording is NEW and free to tune: edit these constants (format specs included)
+# and update EXPECTED_EXIT_SECTION in tests/test_prompt_builder.py to match.
+# ---------------------------------------------------------------------------
+EXIT_BLOCKAGE_HEADER = "DOWNSTREAM BLOCKAGE CONTEXT"
+EXIT_BLOCKAGE_INTRO = ("The following roads LEAVING this intersection are "
+                       "blocked further downstream:")
+EXIT_BLOCKAGE_LINE = ("- The road exiting toward the {direction} "
+                      "({blocked_lanes} of {lane_count} lanes blocked, "
+                      "{distance_m:.0f} m past this intersection): {cause}. {served}")
+EXIT_SERVED_BY = "Signals {movements} release vehicles onto this road."
+EXIT_SERVED_NONE = "Only right-turning vehicles enter this road."
+EXIT_BLOCKAGE_FOOTER = ("Extended green for the signals feeding a blocked road "
+                        "can queue vehicles onto it and cause spillback into "
+                        "this intersection.")
+
+
+def _exit_blockage_line(blockage: dict) -> str:
+    """One bullet for an exit blockage (from SumoEnv.describe_exit_blockages).
+    For speed restrictions the distance is nominal -- the restriction covers
+    the whole lane (same precedent as the approach section's segment)."""
+    movements = blockage["feeding_movements"]
+    if movements:
+        served = EXIT_SERVED_BY.format(movements=", ".join(movements))
+    else:
+        served = EXIT_SERVED_NONE
+    return EXIT_BLOCKAGE_LINE.format(
+        direction=blockage["exit_direction"],
+        blocked_lanes=1,
+        lane_count=blockage["lane_count"],
+        distance_m=blockage["distance_m"],
+        cause=_cause(blockage),
+        served=served,
+    )
+
+
+def build_exit_blockage_section(exit_blockages) -> str:
+    """Renders blockages on roads leaving the intersection as a prompt section;
+    '' when there are none, so prompts without exit blockages are unchanged."""
+    if not exit_blockages:
+        return ""
+    lines = [EXIT_BLOCKAGE_HEADER, EXIT_BLOCKAGE_INTRO]
+    lines += [_exit_blockage_line(b) for b in exit_blockages]
+    lines.append(EXIT_BLOCKAGE_FOOTER)
+    return "\n".join(lines)
+
+
+def get_prompt(state_dict: dict, blockages=None, exit_blockages=None) -> str:
     observation_text = build_observation(state_dict)
-    blockage_section = build_blockage_section(blockages)
-    if blockage_section:
-        blockage_section = f"\n{blockage_section}\n\n"
+    sections = [s for s in (build_blockage_section(blockages),
+                            build_exit_blockage_section(exit_blockages)) if s]
+    if sections:
+        blockage_section = "\n" + "\n\n".join(sections) + "\n\n"
+    else:
+        blockage_section = ""
     return (
         "A traffic light regulates a four-section intersection with northern, southern, eastern, and western "
         "sections, each containing two lanes: one for through traffic and one for left-turns. Each lane is "

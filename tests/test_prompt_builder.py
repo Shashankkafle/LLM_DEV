@@ -16,7 +16,8 @@ import copy
 import hashlib
 
 from configurations import LLM_SYSTEM_PROMPT
-from utils.prompt_builder import build_blockage_section, get_prompt
+from utils.prompt_builder import (build_blockage_section,
+                                  build_exit_blockage_section, get_prompt)
 
 # sha256 of get_prompt(STATE) for the fixture below, recorded when the blockage
 # feature landed. If this changes, the no-blockage prompt drifted -- which
@@ -61,6 +62,32 @@ EXPECTED_SECTION = (
     "speed restriction — 60% reduction.\n"
     "On blocked lanes, the queued counts above INCLUDE vehicles trapped behind "
     "the blockage that cannot reach the intersection until it clears."
+)
+
+# Shaped exactly like SumoEnv.describe_exit_blockages output.
+EXIT_BLOCKAGES = [
+    {"lane_id": "road_1_4_3_0", "exit_direction": "South",
+     "feeding_movements": ["ELWL", "NTST"], "blocked_lane_index": 0,
+     "lane_count": 3, "distance_m": 562.8, "lane_length_m": 572.8,
+     "method": "obstacle_vehicle", "severity": 1.0},
+    {"lane_id": "road_2_2_0_1", "exit_direction": "East",
+     "feeding_movements": [], "blocked_lane_index": 1,
+     "lane_count": 3, "distance_m": 100.0, "lane_length_m": 300.0,
+     "method": "speed_restriction", "severity": 0.6},
+]
+
+# Literal golden (not a sha) so tuning the exit wording is a visible diff here.
+EXPECTED_EXIT_SECTION = (
+    "DOWNSTREAM BLOCKAGE CONTEXT\n"
+    "The following roads LEAVING this intersection are blocked further downstream:\n"
+    "- The road exiting toward the South (1 of 3 lanes blocked, 563 m past this "
+    "intersection): stopped vehicle — full blockage. Signals ELWL, NTST release "
+    "vehicles onto this road.\n"
+    "- The road exiting toward the East (1 of 3 lanes blocked, 100 m past this "
+    "intersection): speed restriction — 60% reduction. Only right-turning "
+    "vehicles enter this road.\n"
+    "Extended green for the signals feeding a blocked road can queue vehicles "
+    "onto it and cause spillback into this intersection."
 )
 
 
@@ -121,6 +148,43 @@ def test_blockage_section_is_pure_insertion():
     idx = base.index("Please answer:")
     expected = base[:idx] + "\n" + EXPECTED_SECTION + "\n\n" + base[idx:]
     assert with_blockages == expected
+
+
+# --------------------------------------------------------------------------
+# The exit (upstream-controller) blockage section
+# --------------------------------------------------------------------------
+
+def test_exit_blockage_section_golden():
+    assert build_exit_blockage_section(EXIT_BLOCKAGES) == EXPECTED_EXIT_SECTION
+
+
+def test_empty_exit_list_changes_nothing():
+    base = get_prompt(STATE)
+    assert get_prompt(STATE, exit_blockages=None) == base
+    assert get_prompt(STATE, exit_blockages=[]) == base
+
+
+def test_right_turn_only_exit_wording():
+    section = build_exit_blockage_section([EXIT_BLOCKAGES[1]])
+    assert "Only right-turning vehicles enter this road." in section
+
+
+def test_exit_only_is_pure_insertion():
+    base = get_prompt(STATE)
+    idx = base.index("Please answer:")
+    expected = base[:idx] + "\n" + EXPECTED_EXIT_SECTION + "\n\n" + base[idx:]
+    assert get_prompt(STATE, exit_blockages=EXIT_BLOCKAGES) == expected
+
+
+def test_combined_sections_are_pure_insertion():
+    # Approach section first, exit section second, blank line between -- and
+    # nothing else changed.
+    base = get_prompt(STATE)
+    idx = base.index("Please answer:")
+    expected = (base[:idx] + "\n" + EXPECTED_SECTION + "\n\n"
+                + EXPECTED_EXIT_SECTION + "\n\n" + base[idx:])
+    assert get_prompt(STATE, blockages=BLOCKAGES,
+                      exit_blockages=EXIT_BLOCKAGES) == expected
 
 
 if __name__ == "__main__":

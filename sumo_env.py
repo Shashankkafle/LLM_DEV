@@ -110,6 +110,59 @@ class SumoEnv:
 
         return movement_lane_map
 
+    def _build_exit_mapping(self):
+        """
+        Maps, per traffic light, each edge its links discharge onto to the
+        outbound compass direction and the phase names whose protected 'G'
+        links feed that edge. Edges reachable only via permissive 'g'
+        right-turn links appear with an empty movements list.
+
+        Directions can be cross-checked against the static
+        configurations.MOVEMENT_OUTGOING_ROAD table, but are derived from the
+        live network so they cannot disagree with the geometry.
+
+        Returns:
+            {
+                tl_id: {
+                    edge_id: {"direction": "South", "movements": ["ELWL", "NTST"]},
+                    ...
+                }
+            }
+        """
+        mapping = {}
+        for tl_id in traci.trafficlight.getIDList():
+            controlled_links = traci.trafficlight.getControlledLinks(tl_id)
+
+            edge_movements = {}
+            for links in controlled_links:
+                for from_lane, to_lane, via in links:
+                    edge_movements.setdefault(traci.lane.getEdgeID(to_lane), set())
+
+            for phase_name, phase_cfg in self.intersection_config["phases"].items():
+                for i, char in enumerate(phase_cfg["green"]):
+                    if char != 'G':
+                        continue
+                    for from_lane, to_lane, via in controlled_links[i]:
+                        edge_movements[traci.lane.getEdgeID(to_lane)].add(phase_name)
+
+            mapping[tl_id] = {
+                edge_id: {"direction": self._exit_direction(edge_id),
+                          "movements": sorted(movements)}
+                for edge_id, movements in edge_movements.items()
+            }
+        return mapping
+
+    def _exit_direction(self, edge_id):
+        """Compass direction the edge leads toward -- the outbound mirror of
+        the _build_approach_mapping heuristic (which labels where traffic
+        comes FROM; this labels where it goes TO)."""
+        shape = traci.lane.getShape(edge_id + "_0")
+        dx = shape[-1][0] - shape[0][0]
+        dy = shape[-1][1] - shape[0][1]
+        if abs(dx) > abs(dy):
+            return "East" if dx > 0 else "West"
+        return "North" if dy > 0 else "South"
+
     def step(self):
         traci.simulationStep()
         if self.blockage_manager is not None:
@@ -123,6 +176,7 @@ class SumoEnv:
             for intersection_id in self.intersection_ids
         }
         self.approach_mapping = self._build_approach_mapping()
+        self.exit_mapping = self._build_exit_mapping()
         mapped_lanes = sum(len(lanes) for lanes in self.approach_mapping.values())
         print(f"SumoEnv initialized: {len(self.intersection_ids)} intersections, "
               f"{mapped_lanes} approach lanes mapped")
@@ -305,6 +359,41 @@ class SumoEnv:
                 "approach": approach_map[lane_id],
                 "movement": movement,
                 "segment": self._segment_from_stopline(blockage["position"], lane_id),
+                "method": blockage["method"],
+                "severity": blockage["severity"],
+            })
+        return descriptions
+
+    def describe_exit_blockages(self, intersection_id):
+        """Active blockages on roads LEAVING this intersection -- the
+        controller upstream of the blockage. Sibling of describe_blockages,
+        which covers the approach (downstream-controller) side.
+
+        Returns a list of fact dicts for the prompt's exit section:
+        {lane_id, exit_direction, feeding_movements, blocked_lane_index,
+        lane_count, distance_m (from this intersection to the blockage),
+        lane_length_m, method, severity}. feeding_movements is empty for
+        roads only right-turns enter. Blockages on fringe-origin edges have
+        no upstream traffic light and appear in no exit description.
+        """
+        if self.blockage_manager is None:
+            return []
+        exit_map = self.exit_mapping[intersection_id]
+        descriptions = []
+        for blockage in self.blockage_manager.get_active_blockages():
+            lane_id = blockage["lane_id"]
+            edge_id = traci.lane.getEdgeID(lane_id)
+            if edge_id not in exit_map:
+                continue  # not a road leaving this intersection
+            lane_length = traci.lane.getLength(lane_id)
+            descriptions.append({
+                "lane_id": lane_id,
+                "exit_direction": exit_map[edge_id]["direction"],
+                "feeding_movements": exit_map[edge_id]["movements"],
+                "blocked_lane_index": int(lane_id.rsplit("_", 1)[1]),
+                "lane_count": traci.edge.getLaneNumber(edge_id),
+                "distance_m": lane_length - blockage["position"],
+                "lane_length_m": lane_length,
                 "method": blockage["method"],
                 "severity": blockage["severity"],
             })

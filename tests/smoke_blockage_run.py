@@ -58,6 +58,7 @@ def main():
     state_flag_during = None
     state_flag_after = None
     descriptions_during = None
+    exit_descriptions_during = None
 
     for step in range(1, TOTAL_STEPS + 1):
         env.step()
@@ -88,6 +89,7 @@ def main():
             state = env.get_state("TLS")
             state_flag_during = state["lane_states"][BLOCKED_LANE]["blocked"]
             descriptions_during = env.describe_blockages("TLS")
+            exit_descriptions_during = env.describe_exit_blockages("TLS")
         if step == 1000:
             state_flag_after = env.get_state("TLS")["lane_states"][BLOCKED_LANE]["blocked"]
             obstacle_removed = OBSTACLE_ID not in vehicles
@@ -113,6 +115,8 @@ def main():
         "lane_id": BLOCKED_LANE, "approach": "West", "movement": "ETWT",
         "segment": 3, "method": "obstacle_vehicle", "severity": 1.0,
     }], f"describe_blockages renders approach/movement/segment ({descriptions_during})")
+    check(exit_descriptions_during == [],
+          "fringe-fed blockage produces no exit description")
 
     print(f"\n{'ALL CHECKS PASSED' if not failures else f'{len(failures)} CHECKS FAILED'}")
     return 1 if failures else 0

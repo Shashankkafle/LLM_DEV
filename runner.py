@@ -38,9 +38,19 @@ def parse_args():
                              "Omit for no blockages.")
     parser.add_argument("--hide_blockage_info", action="store_true",
                         help="Ablation: inject the blockages physically but "
-                             "keep them out of the prompt. Separates 'the LLM "
+                             "keep them out of the prompt entirely (both the "
+                             "approach and exit sections). Separates 'the LLM "
                              "uses the incident information' from 'the LLM "
                              "reacts to the queue numbers'.")
+    parser.add_argument("--blockage_info_scope", type=str,
+                        choices=("both", "approach", "exit"),
+                        default="both",
+                        help="Which controllers hear about a blockage: "
+                             "'approach' informs only the intersection whose "
+                             "approach lane is blocked (pre-existing behavior), "
+                             "'exit' only the intersection whose exit road is "
+                             "blocked, 'both' informs both. Ignored under "
+                             "--hide_blockage_info.")
     parser.add_argument(
         "--intersection_config",
         type=str,
@@ -113,6 +123,7 @@ def main(args):
         "seed": args.seed,
         "blockage_scenario": args.blockage_scenario,
         "hide_blockage_info": args.hide_blockage_info,
+        "blockage_info_scope": args.blockage_info_scope,
     }
     ctx = setup_run(conf, args.test_name, args.simulation_config, run_meta,
                     use_gui=args.use_gui, seed=args.seed, verbose_metrics=True,
@@ -134,9 +145,17 @@ def main(args):
             extracted_signal = None
             next_phase = previous_phase
         else:
-            blockages = (None if args.hide_blockage_info
-                         else ctx.env.describe_blockages(intersection_id))
-            prompt = get_prompt(state_dict=state_data, blockages=blockages)
+            if args.hide_blockage_info:
+                blockages = exit_blockages = None
+            else:
+                scope = args.blockage_info_scope
+                blockages = (ctx.env.describe_blockages(intersection_id)
+                             if scope in ("both", "approach") else None)
+                exit_blockages = (ctx.env.describe_exit_blockages(intersection_id)
+                                  if scope in ("both", "exit") else None)
+            prompt = get_prompt(state_dict=state_data, blockages=blockages,
+                                exit_blockages=exit_blockages)
+                                
             start_time = time.time()
             llm_output = llm.inference(prompt)
             latency_ms = (time.time() - start_time) * 1000

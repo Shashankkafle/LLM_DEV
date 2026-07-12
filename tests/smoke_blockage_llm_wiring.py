@@ -41,6 +41,8 @@ args = argparse.Namespace(
     use_gui=False,
     seed=None,
     blockage_scenario="simulations/single_intersection/scenarios/accident_single_lane.json",
+    hide_blockage_info=False,
+    blockage_info_scope="both",
     intersection_config="single_intersection",
 )
 runner.main(args)
@@ -73,6 +75,11 @@ check(in_window and all(
 check(pre_window and all("LANE BLOCKAGE" not in d["llm_input"]["user_prompt"]
                          for d in pre_window),
       f"all {len(pre_window)} pre-window prompts are blockage-free")
+# The blocked lane starts at the network fringe, so no traffic light is
+# upstream of the blockage and the exit section must never render.
+check(all("DOWNSTREAM BLOCKAGE CONTEXT" not in d["llm_input"]["user_prompt"]
+          for d in decisions if d["llm_input"]["user_prompt"]),
+      "no prompt carries an exit section (fringe-fed blockage)")
 check(in_window and all(
     d["traffic_state"]["ETWT"]["West"]["lanes"]["W2TLS_0"]["blocked"] is True
     for d in in_window),
