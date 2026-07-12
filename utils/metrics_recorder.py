@@ -9,6 +9,7 @@ from configurations import (
     FINAL_SUMMARY_FILENAME,
     DECISIONS_FILENAME,
     SUMO_STATISTIC_FILENAME,
+    OBSTACLE_VEHICLE_PREFIX,
 )
 import traci
 from pathlib import Path
@@ -45,11 +46,17 @@ def _input_fingerprints(sumo_config):
 
 
 class MetricsRecorder:
-    def __init__(self, run_dir, verbose=True, phase_names=None, sumo_config=None):
+    def __init__(self, run_dir, verbose=True, phase_names=None, sumo_config=None,
+                 blockage_manager=None):
         self.verbose = verbose
         self.input_files = (
             _input_fingerprints(sumo_config) if sumo_config else None
         )
+
+        # When set, each step summary line records the currently blocked lanes,
+        # giving blockage runs a time series to slice before/during/after
+        # windows. Runs without a manager keep their exact previous format.
+        self.blockage_manager = blockage_manager
 
         # Valid phase names used to flag LLM hallucinations. Defaults to the
         # default config's phases; pass the active config's names when running
@@ -122,9 +129,19 @@ class MetricsRecorder:
         if self.sumo_version is None:
             self.sumo_version = traci.getVersion()[1]
 
-        # Track vehicles entering the simulation this step.
-        self.loaded_ids.update(traci.simulation.getLoadedIDList())
+        # Track vehicles entering the simulation this step. Synthetic blockage
+        # obstacles are filtered out of ALL per-vehicle accounting here: they
+        # are infrastructure, not demand -- and vehicle.remove() at the end of
+        # a blockage emits no arrival, so an unfiltered obstacle would sit in
+        # still_running forever and pollute the CityFlow-style averages and
+        # completion_rate of the blockage arm only.
+        self.loaded_ids.update(
+            v for v in traci.simulation.getLoadedIDList()
+            if not v.startswith(OBSTACLE_VEHICLE_PREFIX)
+        )
         for vehicle in traci.simulation.getDepartedIDList():
+            if vehicle.startswith(OBSTACLE_VEHICLE_PREFIX):
+                continue
             self.departed_ids.add(vehicle)
             self.depart_times[vehicle] = current_time
             self.final_edges[vehicle] = traci.vehicle.getRoute(vehicle)[-1]
@@ -132,6 +149,8 @@ class MetricsRecorder:
         # Accumulate true waiting time and count the current network-wide queue.
         current_queue_length = 0
         for vehicle in traci.vehicle.getIDList():
+            if vehicle.startswith(OBSTACLE_VEHICLE_PREFIX):
+                continue
             if traci.vehicle.getSpeed(vehicle) < MIN_SPEED:
                 current_queue_length += 1
                 self.waiting_accumulated[vehicle] = (
@@ -146,6 +165,8 @@ class MetricsRecorder:
 
         # Finalize trips for vehicles that arrived (left the network) this step.
         for vehicle in traci.simulation.getArrivedIDList():
+            if vehicle.startswith(OBSTACLE_VEHICLE_PREFIX):
+                continue
             self.arrived_ids.add(vehicle)
             depart_time = self.depart_times.get(vehicle)
             if depart_time is None:
@@ -158,6 +179,8 @@ class MetricsRecorder:
         summary = self._trip_averages()
         summary["queue_length"] = current_queue_length
         summary["step"] = step
+        if self.blockage_manager is not None:
+            summary["blocked_lanes"] = self.blockage_manager.get_blocked_lane_ids()
         with open(self.step_log_path, "a") as f:
             f.write(json.dumps(summary) + "\n")
 
@@ -345,9 +368,14 @@ class MetricsRecorder:
         stopped (wait > 0), 0.0 when none are. Called per decision so
         save_final_summary can average across decision points.
         """
+        # The frozen blockage obstacle accrues waiting time continuously for
+        # its whole window; unfiltered it would pump this paper-comparable AWT
+        # in the blockage arm only.
         halted_waits = [
             w for w in (
-                traci.vehicle.getWaitingTime(v) for v in traci.vehicle.getIDList()
+                traci.vehicle.getWaitingTime(v)
+                for v in traci.vehicle.getIDList()
+                if not v.startswith(OBSTACLE_VEHICLE_PREFIX)
             )
             if w > 0
         ]
