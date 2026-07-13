@@ -165,6 +165,13 @@ movement, traffic will likely bypass.
 
 ### 2.4 `utils/prompt_builder.py` — rewrite, reusing source phrasing (~20 LOC)
 
+> **Superseded (2026-07-13):** the section wording planned below shipped, then was
+> replaced by the event-text templates v2.1 (`LANE BLOCKAGE REPORT` / `DOWNSTREAM
+> BLOCKAGE REPORT`, per-bullet approach scoping, unsignalized-lane suppression,
+> commonsense block moved to the system prompt). See METRICS.md "Event-text
+> templates v2.1" and the goldens in tests/test_prompt_builder.py. The no-blockage
+> byte-identity invariant and the insertion point below still hold.
+
 Do **not** port `prompts/sumo_blockage_prompt.py` (345 LOC). Its `<phase>0–3</phase>`
 answer contract, hardcoded lane tables, duplicate no-blockage builders, system-prompt
 loading, and two-message format all duplicate or contradict what this repo already has.

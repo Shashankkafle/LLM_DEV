@@ -9,7 +9,8 @@
       "start_step": 300,
       "end_step": 900,
       "method": "obstacle_vehicle",
-      "severity": 1.0
+      "severity": 1.0,
+      "cause": "collision"
     }
   ]
 }

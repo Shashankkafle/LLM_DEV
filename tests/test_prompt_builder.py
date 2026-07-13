@@ -3,8 +3,12 @@
 THE invariant: with no active blockages, get_prompt returns byte-for-byte what
 it returned before the blockage feature existed -- old and new runs stay
 comparable, and LightGPT-style fine-tunes keep seeing their training template.
-The blockage section may only ever be a pure insertion between the observation
+The blockage sections may only ever be pure insertions between the observation
 and "Please answer:".
+
+The blockage wording implements the event-text prompt templates v2.1
+(prompt-review design doc, 2026-07-13). The goldens below reproduce those
+templates; changing either side needs a decisions-log entry.
 
 All fixtures are env-shaped (they carry the per-lane "blocked" flags exactly as
 SumoEnv.get_state emits them) to prove the flags cannot leak into the text.
@@ -15,7 +19,7 @@ Run: PYTHONPATH=<repo root> python tests/test_prompt_builder.py   (or pytest)
 import copy
 import hashlib
 
-from configurations import LLM_SYSTEM_PROMPT
+from configurations import LLM_COMMONSENSE_BLOCK, LLM_SYSTEM_PROMPT
 from utils.prompt_builder import (build_blockage_section,
                                   build_exit_blockage_section, get_prompt)
 
@@ -46,48 +50,76 @@ STATE = {
     },
 }
 
-BLOCKAGES = [
-    {"lane_id": "W2TLS_0", "approach": "West", "movement": "ETWT",
-     "segment": 3, "method": "obstacle_vehicle", "severity": 1.0},
-    {"lane_id": "E2TLS_2", "approach": "East", "movement": None,
-     "segment": 1, "method": "speed_restriction", "severity": 0.6},
-]
+# Shaped exactly like SumoEnv.describe_blockages output. The second entry sits
+# on a lane no signal serves (movement None) and must be suppressed.
+FULL_BLOCKAGE = {
+    "lane_id": "W2TLS_0", "approach": "West", "movement": "ETWT",
+    "segment": 3, "method": "obstacle_vehicle", "severity": 1.0,
+    "cause": "stopped vehicle",
+}
+UNSIGNALIZED_BLOCKAGE = {
+    "lane_id": "E2TLS_2", "approach": "East", "movement": None,
+    "segment": 1, "method": "speed_restriction", "severity": 0.6,
+    "cause": "roadworks",
+}
+PARTIAL_BLOCKAGE = {
+    "lane_id": "W2TLS_1", "approach": "West", "movement": "ELWL",
+    "segment": 2, "method": "speed_restriction", "severity": 0.6,
+    "cause": "stopped delivery vehicle",
+}
+BLOCKAGES = [FULL_BLOCKAGE, UNSIGNALIZED_BLOCKAGE]
 
 EXPECTED_SECTION = (
-    "LANE BLOCKAGE CONTEXT\n"
-    "The following lane blockages are currently active and restrict vehicle flow:\n"
-    "- West approach through lane (signal ETWT), segment 3: "
-    "stopped vehicle — full blockage.\n"
-    "- East approach right-turn lane (not served by any signal), segment 1: "
-    "speed restriction — 60% reduction.\n"
-    "On blocked lanes, the queued counts above INCLUDE vehicles trapped behind "
-    "the blockage that cannot reach the intersection until it clears."
+    "LANE BLOCKAGE REPORT (approaches to this intersection)\n"
+    "The following blockage is currently active on an approach to this "
+    "intersection:\n"
+    "- West approach, through lane (served by signal ETWT), segment 3: "
+    "stopped vehicle — the lane is fully blocked. Vehicles behind the "
+    "blockage in this lane cannot reach the intersection until it clears. "
+    "Within signal ETWT, the West queued and approaching counts reported "
+    "above include these vehicles; the East counts are unaffected by this "
+    "blockage."
 )
 
-# Shaped exactly like SumoEnv.describe_exit_blockages output.
-EXIT_BLOCKAGES = [
-    {"lane_id": "road_1_4_3_0", "exit_direction": "South",
-     "feeding_movements": ["ELWL", "NTST"], "blocked_lane_index": 0,
-     "lane_count": 3, "distance_m": 562.8, "lane_length_m": 572.8,
-     "method": "obstacle_vehicle", "severity": 1.0},
-    {"lane_id": "road_2_2_0_1", "exit_direction": "East",
-     "feeding_movements": [], "blocked_lane_index": 1,
-     "lane_count": 3, "distance_m": 100.0, "lane_length_m": 300.0,
-     "method": "speed_restriction", "severity": 0.6},
-]
+EXPECTED_PARTIAL_SECTION = (
+    "LANE BLOCKAGE REPORT (approaches to this intersection)\n"
+    "The following blockage is currently active on an approach to this "
+    "intersection:\n"
+    "- West approach, left-turn lane (served by signal ELWL), segment 2: "
+    "stopped delivery vehicle — the lane is partially blocked. Vehicles can "
+    "pass the obstruction slowly, so this lane discharges at a reduced rate. "
+    "Within signal ELWL, the West queued and approaching counts reported "
+    "above include vehicles delayed behind the obstruction; the East counts "
+    "are unaffected by this blockage."
+)
 
-# Literal golden (not a sha) so tuning the exit wording is a visible diff here.
+# Shaped exactly like SumoEnv.describe_exit_blockages output. The second entry
+# is a road only right-turning vehicles enter (no feeding movements) and must
+# be suppressed.
+EXIT_BLOCKAGE_SOUTH = {
+    "lane_id": "road_1_4_3_0", "exit_direction": "South",
+    "feeding_movements": ["ELWL", "NTST"],
+    "blocked_lane_feeding_movements": ["NTST"], "blocked_lane_index": 0,
+    "lane_count": 3, "distance_m": 562.8, "lane_length_m": 572.8,
+    "method": "obstacle_vehicle", "severity": 1.0, "cause": "collision",
+}
+EXIT_BLOCKAGE_RIGHT_TURN_ONLY = {
+    "lane_id": "road_2_2_0_1", "exit_direction": "East",
+    "feeding_movements": [],
+    "blocked_lane_feeding_movements": [], "blocked_lane_index": 1,
+    "lane_count": 3, "distance_m": 100.0, "lane_length_m": 300.0,
+    "method": "speed_restriction", "severity": 0.6, "cause": "roadworks",
+}
+EXIT_BLOCKAGES = [EXIT_BLOCKAGE_SOUTH, EXIT_BLOCKAGE_RIGHT_TURN_ONLY]
+
 EXPECTED_EXIT_SECTION = (
-    "DOWNSTREAM BLOCKAGE CONTEXT\n"
-    "The following roads LEAVING this intersection are blocked further downstream:\n"
-    "- The road exiting toward the South (1 of 3 lanes blocked, 563 m past this "
-    "intersection): stopped vehicle — full blockage. Signals ELWL, NTST release "
-    "vehicles onto this road.\n"
-    "- The road exiting toward the East (1 of 3 lanes blocked, 100 m past this "
-    "intersection): speed restriction — 60% reduction. Only right-turning "
-    "vehicles enter this road.\n"
-    "Extended green for the signals feeding a blocked road can queue vehicles "
-    "onto it and cause spillback into this intersection."
+    "DOWNSTREAM BLOCKAGE REPORT (roads leaving this intersection)\n"
+    "The following road leaving this intersection is blocked further "
+    "downstream:\n"
+    "- Road exiting toward the South: collision — 1 of 3 lanes fully "
+    "blocked, located 563 m past this intersection on a 573 m link. "
+    "Movements releasing vehicles onto this road: North→South through (part "
+    "of signal NTST) and East→South left turn (part of signal ELWL)."
 )
 
 
@@ -117,26 +149,72 @@ def test_blocked_flags_in_state_cannot_leak():
     assert get_prompt(flagged) == get_prompt(STATE)
 
 
+# --------------------------------------------------------------------------
+# The commonsense block (event-text templates v2.1, section 0): generic
+# domain guidance shared by BOTH LLM arms via the system prompt, so the
+# informed arm's advantage can only come from the event facts.
+# --------------------------------------------------------------------------
+
+def test_commonsense_block_is_pinned():
+    assert LLM_COMMONSENSE_BLOCK == (
+        "Incidents may block lanes anywhere in the network. A queue trapped "
+        "behind a full lane blockage cannot discharge even when its signal is "
+        "green. A road that is blocked further downstream has reduced storage "
+        "and discharge capacity, and vehicles released onto it may queue back "
+        "into the intersection. When such information is available, consider "
+        "whether queued vehicles are actually able to move before allocating "
+        "green time to them.")
+
+
 def test_system_prompt_is_pinned():
     assert LLM_SYSTEM_PROMPT == (
-        "You are an expert in traffic management. You can use your knowledge of "
-        "traffic commonsense to solve this traffic signal control tasks.")
+        "You are an expert in traffic management. You can use your knowledge "
+        "of traffic commonsense to solve this traffic signal control tasks. "
+        + LLM_COMMONSENSE_BLOCK)
 
 
 # --------------------------------------------------------------------------
-# The blockage section
+# The approach-side blockage section (v2.1 upstream templates)
 # --------------------------------------------------------------------------
 
 def test_blockage_section_golden():
     assert build_blockage_section(BLOCKAGES) == EXPECTED_SECTION
 
 
-def test_left_turn_lane_wording():
-    section = build_blockage_section([
-        {"lane_id": "W2TLS_1", "approach": "West", "movement": "ELWL",
-         "segment": 2, "method": "obstacle_vehicle", "severity": 1.0}])
-    assert ("- West approach left-turn lane (signal ELWL), segment 2: "
-            "stopped vehicle — full blockage.") in section
+def test_partial_blockage_golden():
+    assert build_blockage_section([PARTIAL_BLOCKAGE]) == EXPECTED_PARTIAL_SECTION
+
+
+def test_unsignalized_blockage_is_suppressed():
+    # v2.1 section 3: no signal serves the lane, so there is no action the
+    # report could inform -- and no section means the prompt stays base.
+    assert build_blockage_section([UNSIGNALIZED_BLOCKAGE]) == ""
+    assert get_prompt(STATE, blockages=[UNSIGNALIZED_BLOCKAGE]) == get_prompt(STATE)
+
+
+def test_zero_speed_restriction_counts_as_full():
+    # A speed restriction down to zero makes the lane impassable, so it takes
+    # the full-blockage wording even though the method is speed_restriction.
+    frozen = dict(PARTIAL_BLOCKAGE, severity=1.0, cause="collision")
+    section = build_blockage_section([frozen])
+    assert "the lane is fully blocked" in section
+    assert "partially" not in section
+
+
+def test_full_approach_emits_one_bullet_per_lane():
+    # S3: both lanes of one approach blocked -> two bullets, two signals --
+    # never collapsed into one "approach fully blocked" line.
+    through = dict(FULL_BLOCKAGE, lane_id="N2TLS_0", approach="North",
+                   movement="NTST", segment=2, cause="collision")
+    left = dict(FULL_BLOCKAGE, lane_id="N2TLS_1", approach="North",
+                movement="NLSL", segment=2, cause="collision")
+    section = build_blockage_section([through, left])
+    assert ("- North approach, through lane (served by signal NTST), "
+            "segment 2: collision") in section
+    assert ("- North approach, left-turn lane (served by signal NLSL), "
+            "segment 2: collision") in section
+    assert section.count("\n- ") == 2
+    assert section.count("the South counts are unaffected by this blockage") == 2
 
 
 def test_blockage_section_is_pure_insertion():
@@ -151,7 +229,7 @@ def test_blockage_section_is_pure_insertion():
 
 
 # --------------------------------------------------------------------------
-# The exit (upstream-controller) blockage section
+# The exit (upstream-controller) blockage section (v2.1 downstream template)
 # --------------------------------------------------------------------------
 
 def test_exit_blockage_section_golden():
@@ -164,9 +242,35 @@ def test_empty_exit_list_changes_nothing():
     assert get_prompt(STATE, exit_blockages=[]) == base
 
 
-def test_right_turn_only_exit_wording():
-    section = build_exit_blockage_section([EXIT_BLOCKAGES[1]])
-    assert "Only right-turning vehicles enter this road." in section
+def test_right_turn_only_exit_road_is_suppressed():
+    # No listed movement releases vehicles onto this road, so the report could
+    # not inform any action (same principle as the unsignalized approach lane).
+    assert build_exit_blockage_section([EXIT_BLOCKAGE_RIGHT_TURN_ONLY]) == ""
+    assert (get_prompt(STATE, exit_blockages=[EXIT_BLOCKAGE_RIGHT_TURN_ONLY])
+            == get_prompt(STATE))
+
+
+def test_partial_exit_blockage_wording():
+    partial = dict(EXIT_BLOCKAGE_SOUTH, method="speed_restriction",
+                   severity=0.6, cause="roadworks",
+                   distance_m=100.0, lane_length_m=300.0)
+    section = build_exit_blockage_section([partial])
+    assert ("- Road exiting toward the South: roadworks — 1 of 3 lanes "
+            "partially blocked, located 100 m past this intersection on a "
+            "300 m link; vehicles pass the obstruction slowly. Movements "
+            "releasing vehicles onto this road: North→South through (part of "
+            "signal NTST) and East→South left turn (part of signal ELWL)."
+            ) in section
+
+
+def test_two_blocked_lanes_on_one_exit_road_share_a_bullet():
+    # Two lanes of the same exit road -> "2 of 3 lanes fully blocked", quoting
+    # the blockage nearest the intersection (it bounds the remaining storage).
+    second = dict(EXIT_BLOCKAGE_SOUTH, lane_id="road_1_4_3_1",
+                  blocked_lane_index=1, distance_m=400.0)
+    section = build_exit_blockage_section([EXIT_BLOCKAGE_SOUTH, second])
+    assert section.count("\n- ") == 1
+    assert "2 of 3 lanes fully blocked, located 400 m past this intersection" in section
 
 
 def test_exit_only_is_pure_insertion():

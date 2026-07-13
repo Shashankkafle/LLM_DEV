@@ -1,5 +1,6 @@
 import traci
 from configurations import (
+    BLOCKAGE_DEFAULT_CAUSE,
     INTERSECTION_CONFIG,
     SUMO_BINARY,
     SUMO_GUI_BINARY,
@@ -82,10 +83,11 @@ class SumoEnv:
 
     def _build_movement_lane_map(self, intersection_id):
         """
-        Maps each phase movement key (e.g. 'ELWL') to the set of from-lane IDs
-        that are given a protected green (G) in that phase.
-        
-        Returns:
+        Maps each phase movement key (e.g. 'ELWL') to the lanes its protected
+        green (G) links connect: the from-lanes vehicles wait on and the
+        to-lanes they discharge into.
+
+        Returns two dicts (incoming, outgoing):
             {
                 "ETWT": {"E_through_lane_id", "W_through_lane_id"},
                 "ELWL": {"E_left_lane_id",   "W_left_lane_id"},
@@ -94,21 +96,25 @@ class SumoEnv:
         """
         controlled_links = traci.trafficlight.getControlledLinks(intersection_id)
 
-        movement_lane_map = {}
+        movement_incoming_lane_map = {}
+        movement_outgoing_lane_map = {}
 
         for phase_name, phase_cfg in self.intersection_config["phases"].items():
             phase_string = phase_cfg["green"]
-            lanes_for_movement = set()
+            incoming_lanes_for_movement = set()
+            outgoing_lanes_for_movement = set()
 
             for i, char in enumerate(phase_string):
                 if char == 'G':  # Only protected green, not permissive 'g'
                     links = controlled_links[i]
                     for (from_lane, to_lane, via) in links:
-                        lanes_for_movement.add(from_lane)
+                        incoming_lanes_for_movement.add(from_lane)
+                        outgoing_lanes_for_movement.add(to_lane)
 
-            movement_lane_map[phase_name] = lanes_for_movement
+            movement_incoming_lane_map[phase_name] = incoming_lanes_for_movement
+            movement_outgoing_lane_map[phase_name] = outgoing_lanes_for_movement
 
-        return movement_lane_map
+        return movement_incoming_lane_map, movement_outgoing_lane_map
 
     def _build_exit_mapping(self):
         """
@@ -171,10 +177,12 @@ class SumoEnv:
     def start_simulation(self):
         traci.start(self.cmd)
         self.intersection_ids = traci.trafficlight.getIDList()
-        self.movement_lane_map = {
-            intersection_id: self._build_movement_lane_map(intersection_id)
-            for intersection_id in self.intersection_ids
-        }
+        self.movement_incoming_lane_map = {}
+        self.movement_outgoing_lane_map = {}
+        for intersection_id in self.intersection_ids:
+            incoming, outgoing = self._build_movement_lane_map(intersection_id)
+            self.movement_incoming_lane_map[intersection_id] = incoming
+            self.movement_outgoing_lane_map[intersection_id] = outgoing
         self.approach_mapping = self._build_approach_mapping()
         self.exit_mapping = self._build_exit_mapping()
         mapped_lanes = sum(len(lanes) for lanes in self.approach_mapping.values())
@@ -305,7 +313,7 @@ class SumoEnv:
 
         # --- Movement-grouped counts (aggregated over the movement's lanes) ---
 
-        for movement_name, lane_ids in self.movement_lane_map[intersection_id].items():
+        for movement_name, lane_ids in self.movement_incoming_lane_map[intersection_id].items():
             agg = {}
             for approach in movement_to_approach[movement_name]:
                 agg[approach] = {
@@ -332,13 +340,41 @@ class SumoEnv:
 
         return state
 
+    def movement_capacity(self, intersection_id):
+        """Per signal, per approach: how many lanes serve it and how many are
+        currently blocked. Prompt-independent, so a future standing
+        lane-configuration section can reuse it.
+
+        Returns:
+            {"ETWT": {"East": {"total": 1, "blocked": 0},
+                      "West": {"total": 1, "blocked": 1}}, ...}
+        """
+        blocked_lanes = (
+            set(self.blockage_manager.get_blocked_lane_ids())
+            if self.blockage_manager is not None else set()
+        )
+        approach_map = self.approach_mapping[intersection_id]
+        capacity = {}
+        for movement_name, lane_ids in self.movement_incoming_lane_map[intersection_id].items():
+            per_approach = {
+                approach: {"total": 0, "blocked": 0}
+                for approach in movement_to_approach[movement_name]
+            }
+            for lane_id in lane_ids:
+                counts = per_approach[approach_map[lane_id]]
+                counts["total"] += 1
+                if lane_id in blocked_lanes:
+                    counts["blocked"] += 1
+            capacity[movement_name] = per_approach
+        return capacity
+
     def describe_blockages(self, intersection_id):
         """Active blockages on this intersection's lanes, translated into the
         prompt's vocabulary (the prompt never sees raw lane IDs).
 
         Returns a list of dicts {lane_id, approach, movement, segment, method,
-        severity}. movement is None for lanes outside every phase (e.g. the
-        always-green right-turn lanes); segment uses the same stop-line
+        severity, cause}. movement is None for lanes outside every phase (e.g.
+        the always-green right-turn lanes); segment uses the same stop-line
         distance boundaries as get_state.
         """
         if self.blockage_manager is None:
@@ -350,7 +386,7 @@ class SumoEnv:
             if lane_id not in approach_map:
                 continue  # belongs to another intersection
             movement = next(
-                (name for name, lanes in self.movement_lane_map[intersection_id].items()
+                (name for name, lanes in self.movement_incoming_lane_map[intersection_id].items()
                  if lane_id in lanes),
                 None,
             )
@@ -361,6 +397,7 @@ class SumoEnv:
                 "segment": self._segment_from_stopline(blockage["position"], lane_id),
                 "method": blockage["method"],
                 "severity": blockage["severity"],
+                "cause": self._blockage_cause(blockage),
             })
         return descriptions
 
@@ -370,11 +407,14 @@ class SumoEnv:
         which covers the approach (downstream-controller) side.
 
         Returns a list of fact dicts for the prompt's exit section:
-        {lane_id, exit_direction, feeding_movements, blocked_lane_index,
-        lane_count, distance_m (from this intersection to the blockage),
-        lane_length_m, method, severity}. feeding_movements is empty for
-        roads only right-turns enter. Blockages on fringe-origin edges have
-        no upstream traffic light and appear in no exit description.
+        {lane_id, exit_direction, feeding_movements, blocked_lane_feeding_movements,
+        blocked_lane_index, lane_count, distance_m (from this intersection to
+        the blockage), lane_length_m, method, severity, cause}.
+        feeding_movements is every movement with a protected link onto the
+        blocked EDGE (empty for roads only right-turns enter);
+        blocked_lane_feeding_movements narrows that to movements discharging
+        into the blocked LANE itself. Blockages on fringe-origin edges have no
+        upstream traffic light and appear in no exit description.
         """
         if self.blockage_manager is None:
             return []
@@ -390,14 +430,25 @@ class SumoEnv:
                 "lane_id": lane_id,
                 "exit_direction": exit_map[edge_id]["direction"],
                 "feeding_movements": exit_map[edge_id]["movements"],
+                "blocked_lane_feeding_movements": sorted(
+                    name for name, lanes
+                    in self.movement_outgoing_lane_map[intersection_id].items()
+                    if lane_id in lanes),
                 "blocked_lane_index": int(lane_id.rsplit("_", 1)[1]),
                 "lane_count": traci.edge.getLaneNumber(edge_id),
                 "distance_m": lane_length - blockage["position"],
                 "lane_length_m": lane_length,
                 "method": blockage["method"],
                 "severity": blockage["severity"],
+                "cause": self._blockage_cause(blockage),
             })
         return descriptions
+
+    @staticmethod
+    def _blockage_cause(blockage):
+        """load_scenario always sets a cause; the method-keyed fallback covers
+        schedules built directly from dicts (tests, ad-hoc scripts)."""
+        return blockage.get("cause") or BLOCKAGE_DEFAULT_CAUSE[blockage["method"]]
 
     def _segment_from_stopline(self, distance_to_stopline, lane_id):
         """Same segment boundaries as get_state (Seg1 = 0-L/10, Seg2 = L/10-L/3,

@@ -9,7 +9,8 @@
       "start_step": 100,
       "end_step": null,
       "method": "speed_restriction",
-      "severity": 0.6
+      "severity": 0.6,
+      "cause": "roadworks"
     },
     {
       "blockage_id": "cz_lane1",
@@ -18,7 +19,8 @@
       "start_step": 100,
       "end_step": null,
       "method": "speed_restriction",
-      "severity": 0.6
+      "severity": 0.6,
+      "cause": "roadworks"
     }
   ]
 }

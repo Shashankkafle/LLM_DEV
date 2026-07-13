@@ -65,11 +65,16 @@ in_window = [d for d in decisions if 320 <= d["step"] < 880
 # sees the t=300 activation -- the pre-window ends at loop step 298.
 pre_window = [d for d in decisions if d["step"] < 299
               and d["llm_input"]["user_prompt"]]
-check(in_window and all("LANE BLOCKAGE CONTEXT" in d["llm_input"]["user_prompt"]
-                        for d in in_window),
+check(in_window and all(
+    "LANE BLOCKAGE REPORT (approaches to this intersection)"
+    in d["llm_input"]["user_prompt"] for d in in_window),
       f"all {len(in_window)} in-window prompts carry the blockage section")
 check(in_window and all(
-    "- West approach through lane (signal ETWT), segment 3: stopped vehicle — full blockage."
+    "- West approach, through lane (served by signal ETWT), segment 3: "
+    "collision — the lane is fully blocked. Vehicles behind the blockage in "
+    "this lane cannot reach the intersection until it clears. Within signal "
+    "ETWT, the West queued and approaching counts reported above include "
+    "these vehicles; the East counts are unaffected by this blockage."
     in d["llm_input"]["user_prompt"] for d in in_window),
       "in-window prompts render the exact blockage bullet")
 check(pre_window and all("LANE BLOCKAGE" not in d["llm_input"]["user_prompt"]
@@ -77,7 +82,7 @@ check(pre_window and all("LANE BLOCKAGE" not in d["llm_input"]["user_prompt"]
       f"all {len(pre_window)} pre-window prompts are blockage-free")
 # The blocked lane starts at the network fringe, so no traffic light is
 # upstream of the blockage and the exit section must never render.
-check(all("DOWNSTREAM BLOCKAGE CONTEXT" not in d["llm_input"]["user_prompt"]
+check(all("DOWNSTREAM BLOCKAGE REPORT" not in d["llm_input"]["user_prompt"]
           for d in decisions if d["llm_input"]["user_prompt"]),
       "no prompt carries an exit section (fringe-fed blockage)")
 check(in_window and all(

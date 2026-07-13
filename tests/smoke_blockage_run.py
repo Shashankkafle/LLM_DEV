@@ -114,6 +114,7 @@ def main():
     check(descriptions_during == [{
         "lane_id": BLOCKED_LANE, "approach": "West", "movement": "ETWT",
         "segment": 3, "method": "obstacle_vehicle", "severity": 1.0,
+        "cause": "collision",
     }], f"describe_blockages renders approach/movement/segment ({descriptions_during})")
     check(exit_descriptions_during == [],
           "fringe-fed blockage produces no exit description")

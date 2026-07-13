@@ -209,9 +209,25 @@ SUMO_GUI_BINARY = "sumo-gui"
 LLM_MAX_NEW_TOKENS = 1024
 LLM_TEMPERATURE = 0.0
 LLM_DO_SAMPLE = False
+# Event-independent commonsense block (event-text templates v2.1, section 0).
+# Appended to the system prompt so BOTH LLM arms (with and without event text,
+# i.e. runner.py --hide_blockage_info) see it in every scenario, blockage or
+# not: the informed arm's advantage must come from the event facts alone.
+# Frozen wording -- pinned by tests/test_prompt_builder.py.
+LLM_COMMONSENSE_BLOCK = (
+    "Incidents may block lanes anywhere in the network. A queue trapped "
+    "behind a full lane blockage cannot discharge even when its signal is "
+    "green. A road that is blocked further downstream has reduced storage and "
+    "discharge capacity, and vehicles released onto it may queue back into "
+    "the intersection. When such information is available, consider whether "
+    "queued vehicles are actually able to move before allocating green time "
+    "to them."
+)
+
 LLM_SYSTEM_PROMPT = (
     "You are an expert in traffic management. You can use your knowledge of "
-    "traffic commonsense to solve this traffic signal control tasks."
+    "traffic commonsense to solve this traffic signal control tasks. "
+    + LLM_COMMONSENSE_BLOCK
 )
 # Machine-specific local model path; override per-run with --llm_path.
 LLM_DEFAULT_PATH = (
@@ -316,6 +332,15 @@ OBSTACLE_VEHICLE_PREFIX = "obstacle_"
 # vehicles, which either reports a collision every step (collision.action=warn)
 # or gets the obstacle deleted one step later (action=teleport, SUMO default).
 OBSTACLE_CLEARANCE_M = 10.0
+
+# Fills the factual {CAUSE} slot of the prompt's blockage reports when a
+# scenario omits its optional per-blockage "cause" field. Scenario JSONs
+# should set an explicit cause ("collision", "roadworks", "stopped delivery
+# vehicle", ...) -- these are only fallbacks keyed by injection method.
+BLOCKAGE_DEFAULT_CAUSE = {
+    BLOCKAGE_METHOD_OBSTACLE: "stopped vehicle",
+    BLOCKAGE_METHOD_SPEED: "roadworks",
+}
 
 
 # =============================================================================

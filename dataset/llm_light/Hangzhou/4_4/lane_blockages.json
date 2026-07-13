@@ -10,7 +10,18 @@
       "start_step": 1,
       "end_step": 900,
       "method": "obstacle_vehicle",
-      "severity": 1.0
+      "severity": 1.0,
+      "cause": "collision"
+    },
+    {
+      "blockage_id": "b3",
+      "lane_id": "road_1_4_3_1",
+      "position": 10.0,
+      "start_step": 1,
+      "end_step": 3600,
+      "method": "obstacle_vehicle",
+      "severity": 1.0,
+      "cause": "collision"
     }
   ]
 }

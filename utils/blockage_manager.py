@@ -17,13 +17,16 @@ Scenario JSON shape (see simulations/single_intersection/scenarios/):
       "blockages": [
         {"blockage_id": "b1", "lane_id": "W2TLS_0", "position": 80.0,
          "start_step": 300, "end_step": 900,
-         "method": "obstacle_vehicle", "severity": 1.0}
+         "method": "obstacle_vehicle", "severity": 1.0,
+         "cause": "collision"}
       ]
     }
 
 position is metres UPSTREAM of the stop line (portable across lanes of
 different lengths). start_step/end_step are simulation seconds; end_step null
-means "until the run ends".
+means "until the run ends". cause is the short factual incident description
+the prompt's blockage reports show verbatim ("collision", "roadworks", ...);
+it is optional and defaults per method (configurations.BLOCKAGE_DEFAULT_CAUSE).
 
 traci is imported inside the methods that touch it (same convention as
 utils/state_features.py), so the pure parts -- load_scenario and
@@ -33,6 +36,7 @@ schedule_transitions -- stay importable and testable without SUMO installed.
 import json
 
 from configurations import (
+    BLOCKAGE_DEFAULT_CAUSE,
     BLOCKAGE_METHOD_OBSTACLE,
     BLOCKAGE_METHOD_SPEED,
     OBSTACLE_VEHICLE_PREFIX,
@@ -41,7 +45,7 @@ from configurations import (
 
 _REQUIRED_KEYS = {"blockage_id", "lane_id", "position", "start_step",
                   "end_step", "method"}
-_ALLOWED_KEYS = _REQUIRED_KEYS | {"severity"}
+_ALLOWED_KEYS = _REQUIRED_KEYS | {"severity", "cause"}
 _METHODS = {BLOCKAGE_METHOD_OBSTACLE, BLOCKAGE_METHOD_SPEED}
 
 
@@ -81,6 +85,9 @@ def load_scenario(path):
         blockage.setdefault("severity", 1.0)
         if not 0.0 <= blockage["severity"] <= 1.0:
             raise ValueError(f"Blockage '{bid}': severity must be in [0, 1]")
+        blockage.setdefault("cause", BLOCKAGE_DEFAULT_CAUSE[blockage["method"]])
+        if not isinstance(blockage["cause"], str) or not blockage["cause"].strip():
+            raise ValueError(f"Blockage '{bid}': cause must be a non-empty string")
         if blockage["position"] < 0:
             raise ValueError(f"Blockage '{bid}': position must be >= 0")
         if blockage["start_step"] < 0:

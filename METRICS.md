@@ -185,11 +185,51 @@ unservable queues is part of what the experiment measures). CoLight:
 has no time index or blockage signal, so training on a fixed scheduled
 incident is memorization, not adaptation. Never pool the two.
 
-**Information-asymmetry control.** The LLM gets an explicit blockage section
+**Who hears about a blockage.** Each active blockage is described to TWO
+controllers: the intersection the blocked lane feeds (downstream of the
+blockage) via the `LANE BLOCKAGE REPORT` section, and the intersection whose
+exit road it sits on (upstream of the blockage) via the `DOWNSTREAM BLOCKAGE
+REPORT` section (template constants in `utils/prompt_builder.py`, goldens in
+`tests/test_prompt_builder.py`). `--blockage_info_scope
+{both,approach,exit}` (default `both`) restricts which side is informed
+('approach' = only the controller whose approach lane is blocked, the
+pre-existing behavior) and is recorded in run meta -- runs logged before this
+key existed informed the approach side only. Blockages on fringe-origin edges
+have no upstream traffic
+light and appear on the downstream side only. An empty intersection makes no
+LLM call, so it sees neither section (there is no decision the information
+could alter).
+
+**Event-text templates v2.1 (2026-07-13).** Both sections implement the v2.1
+freeze-candidate templates: per-event text is factual only, no control advice.
+Approach side: one bullet per blocked signal-served lane, full ("the lane is
+fully blocked ... cannot reach the intersection") vs partial ("discharges at a
+reduced rate") wording chosen by whether the lane is impassable, each bullet
+naming the corrupted approach AND the clean paired approach of the same
+signal. Blockages on lanes no listed signal serves (right-turn lanes) are
+suppressed -- the controller has no action they could inform. Exit side: one
+bullet per blocked exit road ("{K} of {M} lanes"), distance AND link length so
+remaining storage is inferable, movement-level attribution ("North→South
+through (part of signal NTST)"); roads only right-turning vehicles enter are
+suppressed. Scenario JSONs may set a per-blockage `cause` shown verbatim
+("collision", "roadworks", ...); omitted causes default per method
+(`configurations.BLOCKAGE_DEFAULT_CAUSE`). The generic guidance (trapped
+queues cannot discharge; blocked roads spill back) moved out of the per-event
+text into the system prompt (`configurations.LLM_COMMONSENSE_BLOCK`), shared
+by BOTH LLM arms in EVERY run -- so `--hide_blockage_info` isolates the event
+information itself, not the concept of blockages. Blockage-section wording
+from before this date (`LANE BLOCKAGE CONTEXT`, "Signal capacity impact"
+lines) is superseded: prompts logged under it are not byte-comparable with
+newer ones. The no-blockage USER prompt is byte-unchanged (the sha pin in
+tests/test_prompt_builder.py is untouched), but the SYSTEM prompt now carries
+the commonsense block in all runs, so LLM runs logged before this date differ
+there.
+
+**Information-asymmetry control.** The LLM gets explicit blockage sections
 while MaxPressure/CoLight see only halting counts, so an LLM win conflates
 privileged information with reasoning. `runner.py --hide_blockage_info`
-injects the blockage physically but keeps it out of the prompt: the core
-matrix for any adaptation claim is LLM-with-info vs LLM-without-info vs
+injects the blockage physically but keeps BOTH sections out of the prompt: the
+core matrix for any adaptation claim is LLM-with-info vs LLM-without-info vs
 baselines, all on the same scenario and seed.
 
 ## Which number for which comparison
