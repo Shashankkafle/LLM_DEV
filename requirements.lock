@@ -1,0 +1,115 @@
+# SUPERSEDED by pyproject.toml + uv.lock (install with `uv sync`).
+# Kept only as a frozen, human-readable record of the 2026-07-14 known-good
+# venv this project's first lock was built from. Do not install from it.
+#
+# Generated 2026-07-14 from the known-good Windows venv (Python 3.11.15,
+# see .python-version) via importlib.metadata.
+#
+# Install order matters -- torch is NOT in this file. Install it FIRST with an
+# explicit CUDA build (torch 2.12.0 Linux CUDA wheels exist only on the cu126
+# index; cu126 runs on any driver >= 525, incl. our A40 driver 550):
+#
+#   uv pip install torch==2.12.0 --index-url https://download.pytorch.org/whl/cu126
+#   uv pip install -r requirements.lock
+#
+# (setup_server.sh does all of this.) Never `pip install torch` from PyPI:
+# the default wheel is a CUDA-13 build that breaks on driver 550.
+#
+# To regenerate after an intentional upgrade:
+#   python -c "from importlib.metadata import distributions; [print(f\"{d.metadata['Name']}=={d.version}\") for d in distributions()]"
+# then re-apply the manual adjustments (drop torch, keep tensorflow-cpu not
+# tensorflow, keep eclipse-sumo).
+#
+# uv-packages.txt remains the loose/dev spec; req.txt is a stale freeze dump.
+
+# SUMO simulator + Python bindings (versions must match each other)
+eclipse-sumo==1.27.1
+traci==1.27.1
+sumolib==1.27.1
+
+# LLM inference stack (torch installed separately, see header)
+transformers==5.9.0
+tokenizers==0.22.2
+accelerate==1.13.0
+safetensors==0.7.0
+huggingface_hub==1.13.0
+hf-xet==1.5.0
+numpy==2.4.6
+
+# CoLight RL baseline -- CPU-only TensorFlow by design (tiny nets; the GPU is
+# reserved for torch/LLM). TF_USE_LEGACY_KERAS=1 is set in code before import.
+tensorflow-cpu==2.21.0
+tf_keras==2.21.0
+
+# TF transitive deps
+absl-py==2.4.0
+astunparse==1.6.3
+flatbuffers==25.12.19
+gast==0.7.0
+google-pasta==0.2.0
+grpcio==1.81.1
+h5py==3.14.0
+keras==3.14.1
+libclang==18.1.1
+ml_dtypes==0.5.4
+namex==0.1.0
+opt_einsum==3.4.0
+optree==0.19.1
+protobuf==7.35.1
+termcolor==3.3.0
+wrapt==2.2.2
+
+# Analysis / plotting
+pandas==3.0.3
+matplotlib==3.11.0
+plotly==6.8.0
+bokeh==3.9.1
+openpyxl==3.1.5
+
+# General deps
+annotated-doc==0.0.4
+anyio==4.13.0
+certifi==2025.4.26
+charset-normalizer==3.4.7
+click==8.1.8
+colorama==0.4.6
+contourpy==1.3.3
+cycler==0.12.1
+et_xmlfile==2.0.0
+filelock==3.16.1
+fonttools==4.63.0
+fsspec==2026.4.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.10
+Jinja2==3.1.6
+kiwisolver==1.5.0
+markdown-it-py==3.0.0
+MarkupSafe==3.0.2
+mdurl==0.1.2
+mpmath==1.3.0
+narwhals==2.22.1
+networkx==3.6.1
+packaging==24.2
+pillow==12.2.0
+psutil==6.1.1
+Pygments==2.19.1
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+PyYAML==6.0.2
+regex==2026.5.9
+requests==2.34.2
+rich==13.9.4
+setuptools==75.8.2
+shellingham==1.5.4
+six==1.17.0
+sympy==1.13.3
+tornado==6.5.7
+tqdm==4.67.1
+typer==0.15.1
+typing_extensions==4.12.2
+tzdata==2026.2
+urllib3==2.7.0
+wheel==0.47.0
+xyzservices==2026.3.0

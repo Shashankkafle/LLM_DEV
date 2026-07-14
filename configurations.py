@@ -229,11 +229,12 @@ LLM_SYSTEM_PROMPT = (
     "traffic commonsense to solve this traffic signal control tasks. "
     + LLM_COMMONSENSE_BLOCK
 )
-# Machine-specific local model path; override per-run with --llm_path.
-LLM_DEFAULT_PATH = (
-    "C:/Users/m6722/Research/LLMTSC_SUMO/models/LLMs/"
-    "models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/"
-    "7ae557604adf67be50417f59c2c2f167def9a775"
+# Default local model, resolved relative to the repo so the same checkout
+# works on any machine; override per-run with --llm_path. open_llm's
+# _resolve_snapshot_path descends into snapshots/<revision>/ automatically.
+_REPO_ROOT = Path(__file__).resolve().parent
+LLM_DEFAULT_PATH = str(
+    _REPO_ROOT / "models/LLMs/models--Qwen--Qwen2.5-0.5B-Instruct"
 )
 
 

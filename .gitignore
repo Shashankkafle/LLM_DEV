@@ -14,8 +14,7 @@ dist/
 # OS files
 .DS_Store
 Thumbs.db
-# uv package manager artifacts
-uv.lock
+# uv.lock must stay tracked -- it is the cross-machine dependency pin set
 models/LLMs
 logs/
 .ipynb_checkpoints

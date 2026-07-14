@@ -1,0 +1,77 @@
+[project]
+name = "llmtsc-sumo"
+version = "0.1.0"
+description = "LLM-based traffic signal control on SUMO with FT/MP/CoLight baselines"
+requires-python = "==3.11.*"
+
+# Direct dependencies only -- loose bounds, floored at the known-good versions.
+# Exact pins are deliberate: SUMO binary/bindings must match each other, torch
+# is version-locked to cu126 index availability, and the TF pair gives Keras-2
+# semantics (TF_USE_LEGACY_KERAS=1 set in code).
+dependencies = [
+    "eclipse-sumo==1.27.1",
+    "traci==1.27.1",
+    "sumolib==1.27.1",
+    "torch==2.12.0",
+    "transformers>=5.9.0",
+    "accelerate>=1.13.0",
+    "huggingface-hub>=1.13.0",
+    # Only needed by the `hf` CLI (model downloads): hub imports click but no
+    # longer gets it transitively since typer 0.16+ dropped its click dependency.
+    "click>=8.1",
+    "hf-xet>=1.5.0",
+    "numpy>=2.4.6",
+    "tensorflow-cpu==2.21.0",
+    "tf-keras==2.21.0",
+]
+
+[dependency-groups]
+# Not imported by repo code -- ad-hoc analysis/plotting of run logs.
+analysis = [
+    "pandas>=3.0.3",
+    "matplotlib>=3.11.0",
+    "plotly>=6.8.0",
+    "bokeh>=3.9.1",
+    "openpyxl>=3.1.5",
+]
+
+[tool.uv]
+default-groups = ["analysis"]
+# Only these platforms are supported/resolved (macOS would fail on tensorflow-cpu).
+environments = [
+    "sys_platform == 'linux'",
+    "sys_platform == 'win32'",
+]
+# Known-good baseline (2026-07-14, first machine this ran on). These only take
+# effect when RE-LOCKING (`uv lock`), holding the ML core at proven versions;
+# day-to-day installs use uv.lock and never touch these. To upgrade a package
+# deliberately: relax/remove its line here, then `uv lock --upgrade-package X`.
+constraint-dependencies = [
+    "transformers==5.9.0",
+    "tokenizers==0.22.2",
+    "accelerate==1.13.0",
+    "huggingface-hub==1.13.0",
+    "hf-xet==1.5.0",
+    "safetensors==0.7.0",
+    "numpy==2.4.6",
+    "keras==3.14.1",
+]
+
+# torch comes from PyTorch's own indexes, never PyPI (whose default Linux wheel
+# is a CUDA-13 build that breaks on drivers < 580): CUDA 12.6 build on Linux
+# (runs on any driver >= 525, incl. the A40 server's 550), CPU build on Windows.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
