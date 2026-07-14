@@ -19,6 +19,7 @@ import argparse
 import traci
 
 from runner_common import setup_run, run_control_loop, build_blockage_manager
+from utils.run_manifest import build_manifest
 from configurations import (
     INTERSECTION_CONFIGS,
     DEFAULT_INTERSECTION_CONFIG_NAME,
@@ -28,7 +29,9 @@ from configurations import (
 
 
 # =============================================================================
-# Controllers. Each exposes choose(intersection_id, handler) -> phase name.
+# Controllers. Each exposes choose(intersection_id, handler) ->
+# (phase name, controller_state dict). controller_state is whatever the rule
+# computed to decide (recorded per decision, so any run is explainable).
 # A decision is made only when a green window ends (handler.switch_phase), so
 # both controllers run on the LLM/CoLight cadence (30s green = one decision).
 # =============================================================================
@@ -41,8 +44,8 @@ class FixedTimeController:
         self.cycle = list(conf["phases"].keys())
 
     def choose(self, intersection_id, handler):
-        idx = self.cycle.index(handler.current_phase)
-        return self.cycle[(idx + 1) % len(self.cycle)]
+        idx = (self.cycle.index(handler.current_phase) + 1) % len(self.cycle)
+        return self.cycle[idx], {"cycle_index": idx}
 
 
 class MaxPressureController:
@@ -87,14 +90,15 @@ class MaxPressureController:
             phase: halting(d["in"]) - halting(d["out"])
             for phase, d in links.items()
         }
+        info = {"pressures": pressures}
         max_pressure = max(pressures.values())
         # Tie-break toward holding the current phase to avoid needless switching.
         if pressures[handler.current_phase] == max_pressure:
-            return handler.current_phase
+            return handler.current_phase, info
         for phase, pressure in pressures.items():
             if pressure == max_pressure:
-                return phase
-        return handler.current_phase  # unreachable; keeps the type checker happy
+                return phase, info
+        return handler.current_phase, info  # unreachable; keeps the type checker happy
 
 
 def build_controller(name, conf, intersection_ids):
@@ -143,9 +147,11 @@ def main(args):
         "seed": args.seed,
         "blockage_scenario": args.blockage_scenario,
     }
+    manifest = build_manifest(args.controller, args, args.intersection_config, conf)
+    manifest["test_name"] = test_name
     ctx = setup_run(conf, test_name, args.simulation_config, run_meta,
                     use_gui=args.use_gui, seed=args.seed,
-                    blockage_manager=blockage_manager)
+                    blockage_manager=blockage_manager, manifest=manifest)
     controller = build_controller(args.controller, conf, list(ctx.handlers))
 
     print(f"Controller    : {args.controller}")
@@ -155,7 +161,16 @@ def main(args):
     print("-" * 50)
 
     def decide(step, intersection_id, handler):
-        return controller.choose(intersection_id, handler)
+        phase, controller_state = controller.choose(intersection_id, handler)
+        state_data = ctx.env.get_state(intersection_id)
+        ctx.recorder.record_simple_decision(
+            step=step, intersection_id=intersection_id,
+            previous_phase=handler.current_phase, activated_phase=phase,
+            decision_type="rule_decision",
+            controller_state=controller_state,
+            traffic_state=state_data.get("movement_states"),
+        )
+        return phase
 
     run_control_loop(ctx, args.simulation_steps, decide)
 

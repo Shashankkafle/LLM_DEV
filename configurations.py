@@ -265,6 +265,12 @@ LOGS_DIR_NAME = "logs"
 PHASE_SEQUENCES_DIR_NAME = "phase_sequences"
 RERUNS_DIR_NAME = "reruns"
 
+RUN_MANIFEST_FILENAME = "run_manifest.json"
+BLOCKAGE_EVENTS_FILENAME = "blockage_events.jsonl"
+# Version of the run record (run_manifest.json + final_summary.json shape).
+# v1 = legacy runs without a schema_version field.
+RUN_RECORD_SCHEMA_VERSION = 2
+
 STEP_SUMMARIES_FILENAME = "step_summaries.jsonl"
 FINAL_SUMMARY_FILENAME = "final_summary.json"
 DECISIONS_FILENAME = "decisions.jsonl"

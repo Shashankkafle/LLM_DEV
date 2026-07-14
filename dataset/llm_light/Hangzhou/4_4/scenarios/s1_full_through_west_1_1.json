@@ -1,0 +1,16 @@
+{
+  "scenario_name": "s1_full_through_west_1_1",
+  "description": "S1 (approach-full template path): obstacle fully blocking the through lane of intersection_1_1's West approach. road_0_1_0 is fringe-fed (no upstream traffic light), so this scenario must produce ONLY the approach section, at exactly one intersection. Position 100 m upstream of the stop line on a 786.4 m lane -> segment 2.",
+  "blockages": [
+    {
+      "blockage_id": "s1",
+      "lane_id": "road_0_1_0_1",
+      "position": 100.0,
+      "start_step": 50,
+      "end_step": 3600,
+      "method": "obstacle_vehicle",
+      "severity": 1.0,
+      "cause": "collision"
+    }
+  ]
+}

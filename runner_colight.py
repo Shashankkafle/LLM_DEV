@@ -20,7 +20,6 @@ import argparse
 import json
 import random
 import shutil
-import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +33,14 @@ from utils.tf_device import configure_tf_devices
 from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
+from utils.run_manifest import (
+    build_manifest,
+    save_manifest,
+    finalize_manifest,
+    add_sumo_runtime,
+    git_commit,
+    file_sha1,
+)
 from utils import state_features as sf
 from configurations import (
     INTERSECTION_CONFIGS,
@@ -54,6 +61,7 @@ from configurations import (
     COLIGHT_WEIGHTS_DIR_NAME,
     COLIGHT_TRAINING_PROGRESS_FILENAME,
     COLIGHT_MODEL_METADATA_FILENAME,
+    BLOCKAGE_EVENTS_FILENAME,
 )
 # Importing the agent activates legacy Keras + the unsafe-deserialization toggle.
 from models_inference.RL.colight_agent import CoLightAgent
@@ -91,18 +99,6 @@ def build_agent_confs(conf, num_agents, weights_dir, features, agent_conf):
     return dic_traffic_env_conf, dic_agent_conf, dic_path, phase_map
 
 
-def _git_commit():
-    """Current repo commit hash for reproducibility, or None if unavailable."""
-    try:
-        out = subprocess.run(["git", "rev-parse", "HEAD"],
-                             capture_output=True, text=True, timeout=5)
-        if out.returncode == 0:
-            return out.stdout.strip()
-    except Exception:
-        pass
-    return None
-
-
 def _sumocfg_inputs(simulation_config):
     """Pull the net-file and route-files a .sumocfg points at.
 
@@ -134,9 +130,9 @@ def build_training_metadata(args, order, agent_conf):
     return {
         "controller": args.variant,
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "git_commit": _git_commit(),
+        "git_commit": git_commit(),
         "seed": args.seed,
-        "seeded_rngs": ["random", "numpy", "tensorflow"],
+        "seeded_rngs": ["random", "numpy", "tensorflow", "sumo"],
         "network": {
             "intersection_config": args.intersection_config,
             "num_intersections": len(order),
@@ -173,6 +169,17 @@ def load_training_metadata(weights_dir):
         return json.loads(path.read_text())
     except Exception:
         return None
+
+
+def _greedy_q_rows(agent, states):
+    """Per-intersection Q-value rows for the decision record (eval only).
+
+    Mirrors the forward pass inside agent.choose_action without touching the
+    lifted agent; the network is deterministic, so this extra pass returns
+    exactly the values the greedy action was argmaxed from.
+    """
+    q_values = agent.q_network(agent.convert_state_to_input(states))
+    return np.asarray(q_values[0]).tolist()
 
 
 def run_episode(env, conf, agent, phase_map, order, features, replay, recorder,
@@ -244,6 +251,21 @@ def run_episode(env, conf, agent, phase_map, order, features, replay, recorder,
                     ))
 
             actions = agent.choose_action(step, live_states)
+            # Record before activate_phase so current_phase is still the true
+            # previous phase. Eval only (recorder is None during training).
+            if recorder is not None:
+                q_rows = _greedy_q_rows(agent, live_states)
+                for k, inter_id in enumerate(order):
+                    recorder.record_simple_decision(
+                        step=step, intersection_id=inter_id,
+                        previous_phase=handlers[inter_id].current_phase,
+                        activated_phase=id_to_name[int(actions[k])],
+                        decision_type="rl_greedy",
+                        controller_state={
+                            "action_index": int(actions[k]),
+                            "q_values": q_rows[k],
+                            "features": live_states[k],
+                        })
             for k, inter_id in enumerate(order):
                 handlers[inter_id].activate_phase(id_to_name[int(actions[k])])
 
@@ -294,7 +316,7 @@ def agent_start_phase(conf):
     return DEFAULT_START_PHASE if DEFAULT_START_PHASE in conf["phases"] else next(iter(conf["phases"]))
 
 
-def train(args, conf, records_dir, features, agent_conf):
+def train(args, conf, records_dir, features, agent_conf, manifest=None):
     weights_dir = records_dir / COLIGHT_WEIGHTS_DIR_NAME
     weights_dir.mkdir(parents=True, exist_ok=True)
     progress_path = records_dir / COLIGHT_TRAINING_PROGRESS_FILENAME
@@ -317,13 +339,20 @@ def train(args, conf, records_dir, features, agent_conf):
     for r in range(args.num_rounds):
         print(f"\n========== {args.variant} training round {r}/{args.num_rounds - 1} ==========")
         if blockage_manager is not None:
+            # One event log across all rounds, each event tagged with its round.
+            blockage_manager.set_event_log(
+                records_dir / BLOCKAGE_EVENTS_FILENAME, context={"round": r})
             # Each round is a fresh SUMO session; a manager carrying last
             # round's finished set would silently never re-fire the blockages.
             blockage_manager.reset()
         env = SumoEnv(sumo_config=args.simulation_config, use_gui=args.use_gui,
-                      intersection_config=conf, blockage_manager=blockage_manager)
+                      intersection_config=conf, blockage_manager=blockage_manager,
+                      seed=args.seed)
         env.start_simulation()
         order = sorted(env.get_intersections())
+        if manifest is not None and manifest["sumo"] is None:
+            add_sumo_runtime(manifest, env.cmd)
+            save_manifest(records_dir, manifest)
 
         if agent is None:
             dtec, dac, dpath, phase_map = build_agent_confs(conf, len(order), weights_dir,
@@ -348,13 +377,15 @@ def train(args, conf, records_dir, features, agent_conf):
         # Epsilon decay per round (the source applies this in the agent constructor).
         agent.dic_agent_conf["EPSILON"] = max(epsilon_init * (epsilon_decay ** r), min_epsilon)
 
-        transitions, total_reward = run_episode(
-            env, conf, agent, phase_map, order, features,
-            replay=_NullReplayRecorder(), recorder=None,
-            simulation_steps=args.simulation_steps,
-            reward_coeff=COLIGHT_REWARD_QUEUE_COEFF, collect=True,
-            ablate_attention=args.ablate_attention)
-        env.close()
+        try:
+            transitions, total_reward = run_episode(
+                env, conf, agent, phase_map, order, features,
+                replay=_NullReplayRecorder(), recorder=None,
+                simulation_steps=args.simulation_steps,
+                reward_coeff=COLIGHT_REWARD_QUEUE_COEFF, collect=True,
+                ablate_attention=args.ablate_attention)
+        finally:
+            env.close()
 
         # Accumulate + forget (keep last MAX_MEMORY_LEN per intersection).
         for inter_id in order:
@@ -400,7 +431,8 @@ def train(args, conf, records_dir, features, agent_conf):
     return weights_dir
 
 
-def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_conf):
+def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_conf,
+             manifest=None):
     phase_sequence_dir = records_dir / PHASE_SEQUENCES_DIR_NAME
     phase_sequence_dir.mkdir(parents=True, exist_ok=True)
 
@@ -408,10 +440,13 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_c
     if args.blockage_scenario:
         shutil.copy(args.blockage_scenario,
                     records_dir / BLOCKAGE_SCENARIO_COPY_FILENAME)
+    if blockage_manager is not None:
+        blockage_manager.set_event_log(records_dir / BLOCKAGE_EVENTS_FILENAME)
 
     env = SumoEnv(sumo_config=args.simulation_config, use_gui=args.use_gui,
                   phase_sequence_dir=phase_sequence_dir, intersection_config=conf,
-                  output_dir=records_dir, blockage_manager=blockage_manager)
+                  output_dir=records_dir, blockage_manager=blockage_manager,
+                  seed=args.seed)
     env.start_simulation()
     order = sorted(env.get_intersections())
 
@@ -444,30 +479,55 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_c
         print(f"[eval] no training metadata found in {weights_dir} "
               f"(model predates metadata logging)")
 
-    recorder = MetricsRecorder(run_dir=records_dir, verbose=False,
-                               phase_names=list(conf["phases"].keys()),
-                               sumo_config=args.simulation_config,
-                               blockage_manager=blockage_manager)
-    replay = ReplayRecorder(record_dir=records_dir, meta={
+    run_meta = {
+        "test_name": args.test_name,
         "controller": args.variant,
         "mode": "eval",
         "eval_round": eval_round,
         "simulation_steps": args.simulation_steps,
         "simulation_config": args.simulation_config,
         "intersection_config": args.intersection_config,
+        "seed": args.seed,
         "blockage_scenario": args.blockage_scenario,
         "training_metadata": trained_on,
-    })
+    }
+    # run_info feeds final_summary.json: keep it to identity fields (the full
+    # training_metadata blob stays in replay_meta.json and the manifest).
+    run_info = {k: v for k, v in run_meta.items() if k != "training_metadata"}
+    recorder = MetricsRecorder(run_dir=records_dir, verbose=False,
+                               phase_names=list(conf["phases"].keys()),
+                               sumo_config=args.simulation_config,
+                               blockage_manager=blockage_manager,
+                               run_info=run_info)
+    replay = ReplayRecorder(record_dir=records_dir, meta=run_meta)
 
-    run_episode(env, conf, agent, phase_map, order, features,
-                replay=replay, recorder=recorder,
-                simulation_steps=args.simulation_steps,
-                reward_coeff=COLIGHT_REWARD_QUEUE_COEFF, collect=False,
-                ablate_attention=args.ablate_attention)
+    if manifest is not None:
+        # The eval episode is the scored one, so its SUMO invocation (with the
+        # metric output flags) is the one worth recording -- overwrite any
+        # sumo block a preceding training phase filled in.
+        add_sumo_runtime(manifest, env.cmd)
+        weights_file = f"round_{eval_round}_inter_0.h5"
+        manifest["colight"] = {
+            "weights_dir": str(Path(weights_dir).resolve()),
+            "eval_round": eval_round,
+            "weights_file": weights_file,
+            "weights_sha1": file_sha1(Path(weights_dir) / weights_file),
+            "ablate_attention": args.ablate_attention,
+            "training_metadata": trained_on,
+        }
+        save_manifest(records_dir, manifest)
 
-    # Close SUMO first so it flushes the statistics file, then summarize.
-    env.close()
-    summary = recorder.save_final_summary()
+    try:
+        run_episode(env, conf, agent, phase_map, order, features,
+                    replay=replay, recorder=recorder,
+                    simulation_steps=args.simulation_steps,
+                    reward_coeff=COLIGHT_REWARD_QUEUE_COEFF, collect=False,
+                    ablate_attention=args.ablate_attention)
+    finally:
+        # Close SUMO first so it flushes the statistics file, then summarize
+        # -- also on a crash, so a partial eval still leaves an honest record.
+        env.close()
+        summary = recorder.save_final_summary()
     return summary
 
 
@@ -525,18 +585,29 @@ def main(args):
     features, agent_conf = VARIANTS[args.variant]
     records_dir, _ = create_run_dirs(args.test_name)
 
-    weights_dir = None
-    if args.mode in ("train", "train_eval"):
-        weights_dir = train(args, conf, records_dir, features, agent_conf)
+    manifest = build_manifest(args.variant, args, args.intersection_config, conf,
+                              extra={"mode": args.mode})
+    save_manifest(records_dir, manifest)
 
-    if args.mode in ("eval", "train_eval"):
-        if weights_dir is None:
-            if args.weights_dir is None:
-                raise ValueError("--mode eval requires --weights_dir")
-            weights_dir = Path(args.weights_dir)
-        eval_round = args.eval_round if args.eval_round >= 0 else args.num_rounds - 1
-        summary = evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_conf)
-        print(f"\n{args.variant} eval final summary:", json.dumps(summary, indent=2))
+    status = "crashed"
+    try:
+        weights_dir = None
+        if args.mode in ("train", "train_eval"):
+            weights_dir = train(args, conf, records_dir, features, agent_conf,
+                                manifest=manifest)
+
+        if args.mode in ("eval", "train_eval"):
+            if weights_dir is None:
+                if args.weights_dir is None:
+                    raise ValueError("--mode eval requires --weights_dir")
+                weights_dir = Path(args.weights_dir)
+            eval_round = args.eval_round if args.eval_round >= 0 else args.num_rounds - 1
+            summary = evaluate(args, conf, records_dir, weights_dir, eval_round,
+                               features, agent_conf, manifest=manifest)
+            print(f"\n{args.variant} eval final summary:", json.dumps(summary, indent=2))
+        status = "completed"
+    finally:
+        finalize_manifest(records_dir, status)
 
 
 if __name__ == "__main__":

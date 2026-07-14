@@ -18,11 +18,13 @@ from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
 from utils.blockage_manager import BlockageManager, load_scenario
+from utils.run_manifest import add_sumo_runtime, save_manifest, finalize_manifest
 from configurations import (
     DEFAULT_START_PHASE,
     LOGS_DIR_NAME,
     PHASE_SEQUENCES_DIR_NAME,
     BLOCKAGE_SCENARIO_COPY_FILENAME,
+    BLOCKAGE_EVENTS_FILENAME,
 )
 
 
@@ -62,28 +64,38 @@ class RunContext:
 
 
 def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
-              seed=None, verbose_metrics=False, blockage_manager=None):
+              seed=None, verbose_metrics=False, blockage_manager=None,
+              manifest=None):
     """Build the run stack every controller shares.
 
-    run_meta is written to replay_meta.json up front so a crashed run still
-    leaves enough on disk to be replayed and re-scored.
+    run_meta is written to replay_meta.json (and the manifest, when given, to
+    run_manifest.json) up front so a crashed run still leaves enough on disk
+    to be replayed and re-scored.
     """
     records_dir, phase_sequence_dir = create_run_dirs(test_name)
+    if manifest is not None:
+        save_manifest(records_dir, manifest)
     # Copy the scenario into the run dir so the run stays reproducible even if
     # the original scenario file later changes.
     if run_meta.get("blockage_scenario"):
         shutil.copy(run_meta["blockage_scenario"],
                     records_dir / BLOCKAGE_SCENARIO_COPY_FILENAME)
+    if blockage_manager is not None:
+        blockage_manager.set_event_log(records_dir / BLOCKAGE_EVENTS_FILENAME)
     replay_recorder = ReplayRecorder(record_dir=records_dir, meta=run_meta)
     recorder = MetricsRecorder(run_dir=records_dir, verbose=verbose_metrics,
                                phase_names=list(conf["phases"].keys()),
                                sumo_config=simulation_config,
-                               blockage_manager=blockage_manager)
+                               blockage_manager=blockage_manager,
+                               run_info=run_meta)
     env = SumoEnv(sumo_config=simulation_config, use_gui=use_gui,
                   phase_sequence_dir=phase_sequence_dir,
                   intersection_config=conf, output_dir=records_dir, seed=seed,
                   blockage_manager=blockage_manager)
     env.start_simulation()
+    if manifest is not None:
+        add_sumo_runtime(manifest, env.cmd)
+        save_manifest(records_dir, manifest)
     handlers = {
         intersection_id: PhaseHandler(env=env, conf=conf,
                                       intersection_id=intersection_id,
@@ -105,8 +117,9 @@ def run_control_loop(ctx, simulation_steps, decide):
       - early exit once SUMO expects no more vehicles,
       - close SUMO first (it flushes the statistics file on close), then write
         the final summary -- also on a crash, so a partial run still leaves an
-        honest record.
+        honest record (the manifest then carries status "crashed").
     """
+    status = "crashed"
     try:
         for step in range(simulation_steps):
             ctx.env.step()
@@ -120,7 +133,13 @@ def run_control_loop(ctx, simulation_steps, decide):
             if traci.simulation.getMinExpectedNumber() <= 0:
                 print(f"No more vehicles expected at step {step}, stopping early.")
                 break
+        status = "completed"
     finally:
-        ctx.env.close()
-        summary = ctx.recorder.save_final_summary()
+        # finalize_manifest must run even if closing SUMO or summarizing
+        # fails: a run dir should never be left claiming status "running".
+        try:
+            ctx.env.close()
+            summary = ctx.recorder.save_final_summary()
+        finally:
+            finalize_manifest(ctx.records_dir, status)
     return summary

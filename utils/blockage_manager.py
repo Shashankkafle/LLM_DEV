@@ -34,6 +34,7 @@ schedule_transitions -- stay importable and testable without SUMO installed.
 """
 
 import json
+from pathlib import Path
 
 from configurations import (
     BLOCKAGE_DEFAULT_CAUSE,
@@ -165,11 +166,38 @@ class BlockageManager:
         self._pending_obstacles = {}  # veh_id -> blockage awaiting placement
         self._original_speeds = {}    # lane_id -> max speed before restriction
         self._deferral_warned = set()
+        self._event_log_path = None   # set_event_log; None = events not logged
+        self._event_context = {}
+        self._current_step = None
+
+    def set_event_log(self, path, context=None):
+        """Append the physical blockage lifecycle (activation, placement
+        deferrals, actual frozen position, deactivation) as JSONL events, so
+        what really happened in the sim is on disk, not just printed.
+        context (e.g. {"round": r}) is merged into every event. Deliberately
+        survives reset(): one log spans all SUMO sessions of a run."""
+        self._event_log_path = Path(path)
+        self._event_context = dict(context) if context else {}
+
+    def _log_event(self, event, blockage, **details):
+        if self._event_log_path is None:
+            return
+        record = {
+            "sim_time": self._current_step,
+            "event": event,
+            "blockage_id": blockage["blockage_id"],
+            "lane_id": blockage["lane_id"],
+            **self._event_context,
+            **details,
+        }
+        with open(self._event_log_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
     def reset(self):
         """Forget all mutable state, for reuse across SUMO sessions (e.g.
         CoLight builds a fresh env per training round). traci.close() already
-        removed the sim-side effects, so no TraCI calls belong here."""
+        removed the sim-side effects, so no TraCI calls belong here. The event
+        log deliberately survives, so one file records every session."""
         self._active.clear()
         self._finished.clear()
         self._pending_obstacles.clear()
@@ -191,10 +219,12 @@ class BlockageManager:
                     f"{blockage['lane_id']} (length {lane_length:.1f} m)")
 
     def step(self, current_step):
+        self._current_step = current_step
         to_activate, to_deactivate, expired = schedule_transitions(
             self.schedule, current_step, set(self._active), self._finished)
         for blockage in expired:
             self._finished.add(blockage["blockage_id"])
+            self._log_event("expired_before_activation", blockage)
         for blockage in to_activate:
             self._activate(blockage)
         self._place_pending_obstacles()
@@ -212,6 +242,9 @@ class BlockageManager:
         self._active[blockage["blockage_id"]] = blockage
         print(f"[blockage] activating '{blockage['blockage_id']}' on "
               f"{blockage['lane_id']} ({blockage['method']})")
+        self._log_event("activated", blockage,
+                        method=blockage["method"],
+                        severity=blockage["severity"])
         if blockage["method"] == BLOCKAGE_METHOD_OBSTACLE:
             self._activate_obstacle_vehicle(blockage)
         elif blockage["method"] == BLOCKAGE_METHOD_SPEED:
@@ -262,6 +295,7 @@ class BlockageManager:
                     print(f"[blockage] target spot on {lane_id} is occupied; "
                           f"deferring placement of '{blockage['blockage_id']}'")
                     self._deferral_warned.add(blockage["blockage_id"])
+                    self._log_event("placement_deferred", blockage)
                 continue
             try:
                 traci.vehicle.moveTo(veh_id, lane_id, position)
@@ -273,6 +307,8 @@ class BlockageManager:
                 del self._pending_obstacles[veh_id]
                 print(f"[blockage] obstacle '{veh_id}' frozen on {lane_id} "
                       f"at {position:.1f} m")
+                self._log_event("obstacle_placed", blockage,
+                                lane_position_m=round(position, 1))
             except traci.TraCIException:
                 pass  # still in the insertion queue; retry next tick
 
@@ -325,3 +361,4 @@ class BlockageManager:
                 blockage["lane_id"], self._original_speeds.pop(blockage["lane_id"]))
         self._active.pop(bid, None)
         print(f"[blockage] deactivated '{bid}'")
+        self._log_event("deactivated", blockage)

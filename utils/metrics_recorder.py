@@ -1,4 +1,3 @@
-import hashlib
 import json
 import time
 import xml.etree.ElementTree as ET
@@ -10,48 +9,40 @@ from configurations import (
     DECISIONS_FILENAME,
     SUMO_STATISTIC_FILENAME,
     OBSTACLE_VEHICLE_PREFIX,
+    RUN_RECORD_SCHEMA_VERSION,
 )
 import traci
 from pathlib import Path
 from datetime import datetime
 
+from utils.run_manifest import input_fingerprints
 
-def _input_fingerprints(sumo_config):
-    """Git-blob SHA-1 of the sumocfg and the input files it references, keyed
-    by filename. Matches `git hash-object <file>`, so a run's inputs can be
-    checked against a commit directly. Returns None if anything can't be read
-    (a run must never fail over provenance).
-    """
-    def blob_sha1(path):
-        # CRLF->LF so a Windows checkout hashes the same as Linux and as
-        # git's autocrlf-normalized blobs.
-        data = path.read_bytes().replace(b"\r\n", b"\n")
-        return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
 
-    try:
-        config_path = Path(sumo_config)
-        fingerprints = {config_path.name: blob_sha1(config_path)}
-        root = ET.parse(config_path).getroot()
-        for tag in ("net-file", "route-files", "additional-files"):
-            node = root.find(f"./input/{tag}")
-            if node is None:
-                continue
-            for name in node.get("value", "").split(","):
-                ref = config_path.parent / name.strip()
-                if ref.exists():
-                    fingerprints[ref.name] = blob_sha1(ref)
-        return fingerprints
-    except Exception:
-        return None
+def _json_fallback(obj):
+    """Last-resort serializer so a numpy scalar/array in a decision record
+    (e.g. CoLight features) never crashes a run."""
+    if hasattr(obj, "item") and getattr(obj, "size", None) == 1:
+        return obj.item()
+    if hasattr(obj, "tolist"):
+        return obj.tolist()
+    return str(obj)
 
 
 class MetricsRecorder:
     def __init__(self, run_dir, verbose=True, phase_names=None, sumo_config=None,
-                 blockage_manager=None):
+                 blockage_manager=None, run_info=None):
         self.verbose = verbose
         self.input_files = (
-            _input_fingerprints(sumo_config) if sumo_config else None
+            input_fingerprints(sumo_config) if sumo_config else None
         )
+
+        # Run identity (controller, seed, ablation flags, ...) -- the runner's
+        # run_meta dict. Merged into final_summary.json so comparison tables
+        # can tell controllers and ablation arms apart, and stamped into every
+        # decision record.
+        self.run_info = run_info or {}
+        self.run_started = time.time()
+        self.run_started_at = datetime.now().isoformat(timespec="seconds")
 
         # When set, each step summary line records the currently blocked lanes,
         # giving blockage runs a time series to slice before/during/after
@@ -95,6 +86,7 @@ class MetricsRecorder:
         # Captured on the first recorded step (TraCI is not connected yet at
         # construction time, and is already closed by final-summary time).
         self.sumo_version = None
+        self.step_length_s = None
 
         # Decision-outcome counters. Every decision point is exactly one type;
         # see record_decision for the classification.
@@ -104,6 +96,12 @@ class MetricsRecorder:
         self.decisions_llm_no_action = 0    # LLM explicitly answered "no change" (e.g. None)
         self.decisions_no_answer = 0        # LLM queried but produced no <signal> tag
         self.total_hallucinations = 0       # LLM produced a <signal> tag naming an invalid phase
+        self.decisions_inference_error = 0  # LLM call itself raised; phase held
+
+        # Per-call inference cost, aggregated into the final summary.
+        self.inference_latencies_ms = []
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
 
     def _trip_averages(self):
         """Averages over vehicles that have actually completed their trip so far."""
@@ -128,6 +126,7 @@ class MetricsRecorder:
         self.last_sim_time = current_time
         if self.sumo_version is None:
             self.sumo_version = traci.getVersion()[1]
+            self.step_length_s = step_length
 
         # Track vehicles entering the simulation this step. Synthetic blockage
         # obstacles are filtered out of ALL per-vehicle accounting here: they
@@ -275,8 +274,16 @@ class MetricsRecorder:
         trip. average_queue_length is the network-wide count of stopped vehicles
         averaged over all recorded steps.
         """
-        summary = self._trip_averages()
+        summary = {"schema_version": RUN_RECORD_SCHEMA_VERSION}
+        # Run identity first, so a summary is self-describing: controller,
+        # seed, intersection_config, ablation flags, ... (whatever the runner
+        # put in its run_meta). Metric keys below override on any collision.
+        summary.update(self.run_info)
+        summary.update(self._trip_averages())
         summary["sumo_version"] = self.sumo_version
+        summary["step_length_s"] = self.step_length_s
+        summary["run_started_at"] = self.run_started_at
+        summary["run_wall_clock_s"] = round(time.time() - self.run_started, 1)
         summary["input_files"] = self.input_files
         # Blockage runs must be distinguishable in comparison tables: a run
         # with an incident is a different experiment, not a worse controller.
@@ -300,6 +307,11 @@ class MetricsRecorder:
             if len(self.decision_wait_averages) > 0 else 0
         )
         summary["average_per_decision_wait_s"] = average_per_decision_wait_s
+        # The raw samples behind the mean, so distributions/time slices can be
+        # analyzed later without rerunning (~one float per decision point).
+        summary["decision_wait_samples"] = [
+            round(w, 2) for w in self.decision_wait_averages
+        ]
         # Fraction of loaded vehicles that actually finished their trip. A low
         # rate means the completed-only ATT/AWT above are optimistic (they drop
         # the worst-off, still-stuck vehicles) -- report it alongside them.
@@ -313,6 +325,7 @@ class MetricsRecorder:
         llm_queried = (
             self.decisions_llm_valid + self.decisions_llm_no_action
             + self.decisions_no_answer + self.total_hallucinations
+            + self.decisions_inference_error
         )
         valid_responses = self.decisions_llm_valid + self.decisions_llm_no_action
         summary["total_decisions"] = self.total_decisions
@@ -322,6 +335,17 @@ class MetricsRecorder:
         summary["llm_no_action_decisions"] = self.decisions_llm_no_action
         summary["llm_no_answer"] = self.decisions_no_answer
         summary["total_hallucinations"] = self.total_hallucinations
+        summary["decisions_inference_error"] = self.decisions_inference_error
+        summary["inference_latency_ms_mean"] = (
+            round(sum(self.inference_latencies_ms) / len(self.inference_latencies_ms), 2)
+            if self.inference_latencies_ms else None
+        )
+        summary["inference_latency_ms_max"] = (
+            round(max(self.inference_latencies_ms), 2)
+            if self.inference_latencies_ms else None
+        )
+        summary["total_prompt_tokens"] = self.total_prompt_tokens or None
+        summary["total_completion_tokens"] = self.total_completion_tokens or None
         summary["valid_response_rate"] = (
             round(valid_responses / llm_queried, 4) if llm_queried > 0 else None
         )
@@ -392,7 +416,10 @@ class MetricsRecorder:
 
     def record_decision(self, step, state_dict, prompt, llm_output,
                         previous_phase, final_phase, decision_type,
-                        latency_ms, extracted_signal, intersection_id):
+                        latency_ms, extracted_signal, intersection_id,
+                        blockage_facts=None, exit_blockage_facts=None,
+                        blockage_info_in_prompt=None, token_usage=None,
+                        error=None):
         """Record one decision point.
 
         decision_type is one of:
@@ -400,15 +427,22 @@ class MetricsRecorder:
           - "llm_decision"         LLM named a valid phase <signal>
           - "llm_no_action"        LLM explicitly answered "no change" (e.g. None)
           - "fallback_parse_error" LLM queried but gave no usable / valid answer
+          - "inference_error"      the LLM call itself raised; phase held
 
         extracted_signal is the RAW parse result: None when no <signal> tag was
         produced, otherwise the tag's text (which may be an invalid phase name).
+        blockage_facts / exit_blockage_facts are the structured describer
+        outputs, recorded even when --hide_blockage_info keeps them out of the
+        prompt (blockage_info_in_prompt says whether the prompt showed them).
         """
         self.total_decisions += 1
 
         if decision_type == "no_action_empty":
             self.decisions_no_action_empty += 1
             parsing_valid = None  # no LLM call was made, so the field is N/A
+        elif decision_type == "inference_error":
+            self.decisions_inference_error += 1
+            parsing_valid = None  # the call failed; there was no output to parse
         elif decision_type == "llm_decision":
             self.decisions_llm_valid += 1
             parsing_valid = True
@@ -422,16 +456,28 @@ class MetricsRecorder:
                 self.total_hallucinations += 1  # tag present but not a valid phase
             parsing_valid = False
 
+        if decision_type != "no_action_empty":
+            self.inference_latencies_ms.append(latency_ms)
+        if token_usage:
+            self.total_prompt_tokens += token_usage.get("prompt_tokens", 0)
+            self.total_completion_tokens += token_usage.get("completion_tokens", 0)
+
         decision_event = {
             "step": step,
             "timestamp": time.time(),
             "event_type": "phase_decision",
+            "intersection_id": intersection_id,
+            "controller": self.run_info.get("controller", "llm"),
             "traffic_state": state_dict.get("movement_states", {}),
+            "blockage_facts": blockage_facts,
+            "exit_blockage_facts": exit_blockage_facts,
+            "blockage_info_in_prompt": blockage_info_in_prompt,
             "llm_input": {"user_prompt": prompt},
             "llm_output": {
                 "raw_text": llm_output,
                 "extracted_signal": extracted_signal,
                 "parsing_valid": parsing_valid,
+                "error": error,
             },
             "phase_action": {
                 "decision_type": decision_type,
@@ -441,19 +487,53 @@ class MetricsRecorder:
                 "activated_phase": final_phase,
                 # Kept for continuity with earlier logs; now means "real failure"
                 # only (empty-intersection no-ops are NOT counted as fallbacks).
-                "fallback_applied": decision_type == "fallback_parse_error",
+                "fallback_applied": decision_type in ("fallback_parse_error",
+                                                      "inference_error"),
             },
             "metrics": {
                 "inference_latency_ms": round(latency_ms, 2),
+                "prompt_tokens": (token_usage or {}).get("prompt_tokens"),
+                "completion_tokens": (token_usage or {}).get("completion_tokens"),
             },
         }
 
-        decision_log_file = self.run_dir / f"{intersection_id}/{DECISIONS_FILENAME}"
-        decision_log_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(decision_log_file, "a") as f:
-            f.write(json.dumps(decision_event) + "\n")
+        self._append_decision(intersection_id, decision_event)
 
         if self.verbose:
             print(f"\n--- Decision @ Step {step} ({decision_type}) ---")
             print(f"  Extracted: {extracted_signal} | Applied: {final_phase} | parsing_valid: {parsing_valid}")
             print(f"  Latency: {latency_ms:.1f}ms")
+
+    def record_simple_decision(self, step, intersection_id, previous_phase,
+                               activated_phase, decision_type,
+                               controller_state=None, traffic_state=None):
+        """Record one decision point for a non-LLM controller.
+
+        Leaner sibling of record_decision: same file and phase_action shape,
+        no llm_input/llm_output. controller_state holds whatever the controller
+        computed to decide (MaxPressure pressures, FixedTime cycle index,
+        CoLight action/Q-values), so any run is explainable after the fact.
+        """
+        self.total_decisions += 1
+        decision_event = {
+            "step": step,
+            "timestamp": time.time(),
+            "event_type": "phase_decision",
+            "intersection_id": intersection_id,
+            "controller": self.run_info.get("controller"),
+            "traffic_state": traffic_state,
+            "phase_action": {
+                "decision_type": decision_type,
+                "previous_phase": previous_phase,
+                "activated_phase": activated_phase,
+                "phase_changed": previous_phase != activated_phase,
+            },
+            "controller_state": controller_state or {},
+        }
+        self._append_decision(intersection_id, decision_event)
+
+    def _append_decision(self, intersection_id, decision_event):
+        decision_log_file = self.run_dir / f"{intersection_id}/{DECISIONS_FILENAME}"
+        decision_log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(decision_log_file, "a") as f:
+            f.write(json.dumps(decision_event, default=_json_fallback) + "\n")

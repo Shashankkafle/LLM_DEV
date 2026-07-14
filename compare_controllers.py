@@ -26,7 +26,11 @@ from pathlib import Path
 # (json key, column header, width). None value renders as "-".
 # The scenario column keeps blockage runs from being ranked against
 # blockage-free runs unnoticed -- an incident run is a different experiment.
+# controller/seed come from the summary itself (schema v2); pre-v2 runs
+# render "-" and are identified only by their label.
 COLUMNS = [
+    ("controller", "ctrl", 12),
+    ("seed", "seed", 5),
     ("blockage_scenario", "scenario", 12),
     ("cityflow_style_att_s", "CityFlow-ATT", 12),
     ("cityflow_style_awt_s", "CityFlow-AWT", 12),

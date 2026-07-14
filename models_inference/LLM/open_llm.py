@@ -13,11 +13,15 @@ from configurations import (
 
 class LLM_Inference:
     def __init__(self, llm_path):
+        self.llm_path_arg = llm_path
         self.llm_path = self._resolve_snapshot_path(llm_path)
         self.model = None
         self.tokenizer = None
         self.model_family = None
         self._logged_first_prompt = False
+        # Set by every inference() call, read by the runner's recorder.
+        self.last_usage = None
+        self.last_formatted_prompt = None
 
     @staticmethod
     def _resolve_snapshot_path(llm_path):
@@ -50,6 +54,27 @@ class LLM_Inference:
             print(f"[Info] No hf_device_map; model on: {self.model.device}")
         self.model_family = self._detect_model_family()
         print(f"[Info] Auto-detected model family: {self.model_family}")
+
+    def describe(self):
+        """Model + generation config for the run manifest, so a run record
+        pins down exactly which model, wrapping, and decoding settings
+        produced its decisions. Call after initialize_llm()."""
+        device_map = getattr(self.model, "hf_device_map", None)
+        return {
+            "llm_path_arg": self.llm_path_arg,
+            "resolved_snapshot_path": self.llm_path,
+            "model_family": self.model_family,
+            "torch_dtype": str(getattr(self.model, "dtype", None)),
+            "device_map": ({k: str(v) for k, v in device_map.items()}
+                           if device_map else str(self.model.device)),
+            "generation": {
+                "max_new_tokens": LLM_MAX_NEW_TOKENS,
+                "temperature": LLM_TEMPERATURE,
+                "do_sample": LLM_DO_SAMPLE,
+            },
+            "system_prompt": LLM_SYSTEM_PROMPT,
+            "chat_template_present": bool(getattr(self.tokenizer, "chat_template", None)),
+        }
 
     def _detect_model_family(self):
         model_type = getattr(self.model.config, "model_type", "").lower()
@@ -127,4 +152,9 @@ class LLM_Inference:
 
         input_length = inputs.input_ids.shape[1]
         generated_tokens = outputs[0, input_length:]
+        self.last_usage = {
+            "prompt_tokens": int(input_length),
+            "completion_tokens": int(generated_tokens.shape[0]),
+        }
+        self.last_formatted_prompt = formatted_prompt
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)

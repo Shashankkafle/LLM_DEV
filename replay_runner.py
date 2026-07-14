@@ -48,11 +48,21 @@ from configurations import (
     SUMO_GUI_BINARY,
     RERUNS_DIR_NAME,
     REPLAY_META_FILENAME,
+    RUN_MANIFEST_FILENAME,
+    FINAL_SUMMARY_FILENAME,
     BLOCKAGE_SCENARIO_COPY_FILENAME,
+    BLOCKAGE_EVENTS_FILENAME,
     sumo_metrics_args,
 )
 from utils.blockage_manager import BlockageManager, load_scenario
 from utils.metrics_recorder import MetricsRecorder
+from utils.run_manifest import (
+    build_manifest,
+    save_manifest,
+    finalize_manifest,
+    add_sumo_runtime,
+    input_fingerprints,
+)
 
 # metrics_recorder.py imports configurations.MIN_SPEED directly, so
 # configurations.py just needs to be importable (e.g. run this script
@@ -143,6 +153,55 @@ def load_blockage_manager(schedule_path: Path, run_details):
                            scenario_name=scenario["scenario_name"])
 
 
+def load_original_record(original_dir: Path):
+    """The original run's recorded input-file hashes and SUMO version, from
+    run_manifest.json (new runs) or final_summary.json (older runs).
+    Returns (input_files, sumo_version); either may be None."""
+    manifest_path = original_dir / RUN_MANIFEST_FILENAME
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        return (manifest.get("environment", {}).get("input_files"),
+                (manifest.get("sumo") or {}).get("version"))
+    except Exception:
+        pass
+    try:
+        summary = json.loads((original_dir / FINAL_SUMMARY_FILENAME).read_text())
+        return summary.get("input_files"), summary.get("sumo_version")
+    except Exception:
+        return None, None
+
+
+def warn_on_input_mismatch(original_inputs, sumocfg_path):
+    """Warn (never fail) when the current net/route files differ from the
+    hashes the original run recorded -- a replay on changed inputs silently
+    re-scores a different experiment."""
+    if not original_inputs:
+        return
+    current = input_fingerprints(sumocfg_path)
+    if not current:
+        return
+    for name, recorded_sha in original_inputs.items():
+        current_sha = current.get(name)
+        if current_sha is None:
+            print(f"WARNING: input file {name} from the original run is no "
+                  f"longer referenced by {sumocfg_path}", file=sys.stderr)
+        elif current_sha != recorded_sha:
+            print(f"WARNING: input file {name} differs from the original run "
+                  f"(hash {current_sha[:12]} vs recorded {recorded_sha[:12]})",
+                  file=sys.stderr)
+
+
+def warn_on_sumo_version_mismatch(original_version):
+    """Warn when replaying under a different SUMO than the original run
+    (METRICS.md documents measurable cross-version drift)."""
+    if not original_version:
+        return
+    current = traci.getVersion()[1]
+    if current != original_version:
+        print(f"WARNING: replaying under {current}, original ran "
+              f"{original_version} -- results may drift", file=sys.stderr)
+
+
 def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None, seed=None):
     binary = SUMO_GUI_BINARY if use_gui else SUMO_BINARY
     cmd = [binary, "-c", sumocfg_path]
@@ -216,15 +275,49 @@ def main():
     print(f"SUMO command  : {' '.join(sumo_cmd)}")
     print("-" * 50)
 
+    original_inputs, original_sumo_version = load_original_record(schedule_path.parent)
+    warn_on_input_mismatch(original_inputs, sumocfg_path)
+
+    manifest = build_manifest("replay", args, None, None, extra={
+        "replayed_from": str(schedule_path.parent),
+        "source_run_details": run_details,
+    })
+    manifest["test_name"] = test_name
+    manifest["environment"].update({
+        "simulation_config": sumocfg_path,
+        "simulation_config_abs": (str(Path(sumocfg_path).resolve())
+                                  if Path(sumocfg_path).exists() else None),
+        "input_files": input_fingerprints(sumocfg_path),
+        "seed": run_details.get("seed"),
+        "simulation_steps": total_steps,
+    })
+    save_manifest(run_dir, manifest)
+
     blockage_manager = load_blockage_manager(schedule_path, run_details)
+    if blockage_manager is not None:
+        blockage_manager.set_event_log(run_dir / BLOCKAGE_EVENTS_FILENAME)
+    run_info = {
+        "test_name": test_name,
+        "controller": "replay",
+        "replayed_from": str(schedule_path.parent),
+        "source_controller": run_details.get("controller"),
+        "simulation_config": sumocfg_path,
+        "seed": run_details.get("seed"),
+        "blockage_scenario": run_details.get("blockage_scenario"),
+    }
     recorder = MetricsRecorder(run_dir=run_dir, verbose=True,
                                sumo_config=sumocfg_path,
-                               blockage_manager=blockage_manager)
+                               blockage_manager=blockage_manager,
+                               run_info=run_info)
 
     traci.start(sumo_cmd)
+    warn_on_sumo_version_mismatch(original_sumo_version)
+    add_sumo_runtime(manifest, sumo_cmd)
+    save_manifest(run_dir, manifest)
     if blockage_manager is not None:
         blockage_manager.validate_against_network()
 
+    status = "crashed"
     try:
         for step in range(total_steps):
             traci.simulationStep()
@@ -262,12 +355,16 @@ def main():
             if traci.simulation.getMinExpectedNumber() <= 0:
                 print(f"No more vehicles expected at step {step}, stopping early.")
                 break
+        status = "completed"
 
     finally:
         # Close SUMO first so it flushes the statistics file, then summarize
         # (save_final_summary parses that file for population-faithful metrics).
-        traci.close()
-        recorder.save_final_summary()
+        try:
+            traci.close()
+            recorder.save_final_summary()
+        finally:
+            finalize_manifest(run_dir, status)
 
     
 

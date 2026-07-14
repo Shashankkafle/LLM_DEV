@@ -1,0 +1,16 @@
+{
+  "scenario_name": "s2_partial_left_west_1_1",
+  "description": "S2 (approach-partial template path): 60% speed restriction on the left-turn lane of intersection_1_1's West approach. Fringe-fed edge, so approach section only. Exercises the left-turn {SIGNAL}/{lane_type} slots (ELWL, not ETWT). Position 30 m -> segment 1 (the restriction itself covers the whole lane; position only anchors the report).",
+  "blockages": [
+    {
+      "blockage_id": "s2",
+      "lane_id": "road_0_1_0_2",
+      "position": 30.0,
+      "start_step": 50,
+      "end_step": 3600,
+      "method": "speed_restriction",
+      "severity": 0.6,
+      "cause": "roadworks"
+    }
+  ]
+}
