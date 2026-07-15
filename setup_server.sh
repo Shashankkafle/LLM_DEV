@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One-shot, idempotent setup for any Linux machine (tested target: A40,
-# driver 550.54.14). Safe to re-run; every step skips work already done.
+# driver 550.54.14); also runs under Git Bash on Windows (CPU-only torch
+# there, per uv.lock). Safe to re-run; every step skips work already done.
 #
 #   bash setup_server.sh
 #
@@ -26,7 +27,15 @@ uv --version
 
 step "environment (Python + all deps from uv.lock)"
 uv sync --locked
-VENV_PY=".venv/bin/python"
+if [ -e .venv/bin/python ]; then
+    VENV_PY=".venv/bin/python"
+    SUMO_BIN=".venv/bin/sumo"
+    ON_WINDOWS=0
+else
+    VENV_PY=".venv/Scripts/python.exe"
+    SUMO_BIN=".venv/Scripts/sumo.exe"
+    ON_WINDOWS=1
+fi
 
 step "default LLM weights ($QWEN_REPO @ ${QWEN_REVISION:0:12})"
 # snapshot_download API rather than the `hf` CLI: the API surface is stable
@@ -42,14 +51,19 @@ print('model at:', path)
 "
 
 step "verify: SUMO"
-.venv/bin/sumo --version | head -n 2
+"$SUMO_BIN" --version | head -n 2
 
 step "verify: torch sees the GPU"
-"$VENV_PY" -c "
+if [ "$ON_WINDOWS" = 1 ]; then
+    # uv.lock pins the CPU-only torch wheel on win32, so no CUDA check here.
+    "$VENV_PY" -c "import torch; print(torch.__version__, '| CPU build (Windows)')"
+else
+    "$VENV_PY" -c "
 import torch
 assert torch.cuda.is_available(), 'torch.cuda.is_available() is False -- check driver / wheel'
 print(torch.__version__, '| cuda', torch.version.cuda, '|', torch.cuda.get_device_name(0))
 "
+fi
 
 step "verify: TF / traci / transformers import"
 TF_USE_LEGACY_KERAS=1 "$VENV_PY" -c "
@@ -63,5 +77,9 @@ step "verify: 120-step headless end-to-end SUMO run (fixedtime baseline)"
     --simulation_steps 120 --test_name setup_smoke
 
 step "done"
-echo "Setup complete. Activate with: source .venv/bin/activate"
+if [ "$ON_WINDOWS" = 1 ]; then
+    echo "Setup complete. Activate with: .venv\\Scripts\\activate (or 'source .venv/Scripts/activate' in Git Bash)"
+else
+    echo "Setup complete. Activate with: source .venv/bin/activate"
+fi
 echo "LLM smoke test:  python runner.py --test_name server_smoke --simulation_steps 300"
