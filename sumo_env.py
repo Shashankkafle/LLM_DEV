@@ -37,12 +37,14 @@ class SumoEnv:
         # cross-controller-comparable metrics. SUMO flushes these on close.
         if output_dir is not None:
             self.cmd += sumo_metrics_args(output_dir)
-        # Blockage runs must never teleport: under SUMO's default 300s
-        # time-to-teleport the frozen obstacle deletes ITSELF mid-window.
-        # sumo_metrics_args already disables teleporting for measured runs;
-        # this covers the remaining path (no output_dir, e.g. CoLight
-        # training). Never add the flag twice -- SUMO errors on duplicates.
-        if blockage_manager is not None and "--time-to-teleport" not in self.cmd:
+        # Teleporting is disabled on EVERY run, not just measured ones: the
+        # default 300 s teleport silently clears jams (understating
+        # congestion), deletes a frozen blockage obstacle mid-window, and --
+        # before 2026-07-15 -- let CoLight train under different physics than
+        # its teleport-free eval. CityFlow, the reference sim, has no teleport
+        # at all. sumo_metrics_args already carries the flag for measured
+        # runs; never add it twice -- SUMO errors on duplicates.
+        if "--time-to-teleport" not in self.cmd:
             self.cmd += ["--time-to-teleport", "-1"]
         # None keeps SUMO's fixed default seed (deterministic reruns).
         if seed is not None:
