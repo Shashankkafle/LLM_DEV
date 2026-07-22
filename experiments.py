@@ -23,6 +23,10 @@ from pathlib import Path
 
 CONFIGS = {
     "hz1": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_cfphys.sumocfg",
+    # Base "real" routes: no vType sigma, so SUMO defaults it to 0.5 -> driving
+    # is stochastic and --seed genuinely diverges runs (unlike the cfphys
+    # variants, which zero sigma and are seed-invariant). Same 2983-veh demand.
+    "hzreal": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real.sumocfg",
     "jinan1": "dataset/llm_light/Jinan/3_4/anon_3_4_jinan_real_cfphys.sumocfg",
 }
 
@@ -54,6 +58,14 @@ SHORT_TOKENS = {
 
 # --- experiments -------------------------------------------------------------
 
+# Local HF cache folder for the 7B weights the LLM grid runs on. runner.py's
+# --llm_path takes this folder directly; open_llm._resolve_snapshot_path
+# descends into snapshots/<revision>/ itself. NOTE: the model is NOT part of a
+# run's identity (see _identity_fields), so never run two different models over
+# the same config/seed/blockage combos in one logs tree -- the matrix would
+# treat them as the same result. Every experiment below uses this one model.
+QWEN_7B_PATH = "models/LLMs/models--Qwen--Qwen2.5-7B-Instruct"
+
 EXPERIMENTS = {
     # The blockage lever sweep (C1/C2/C3) on MaxPressure -- cheap, no GPU.
     "mp_blockage_sweep": {
@@ -84,6 +96,83 @@ EXPERIMENTS = {
         "blockages": ["none"],
         "steps": 3600,
         "intersection_config": "three_lane",
+    },
+    # FixedTime seed spread on the base real routes (stochastic driving),
+    # clean vs the C3 blockage. Runs on hzreal so the 3 seeds actually diverge.
+    "ft_real_normal_c3": {
+        "controllers": ["fixedtime"],
+        "configs": ["hzreal"],
+        "seeds": [1, 2, 3],
+        "blockages": ["none", "c3"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+    },
+    # CoLight + Advanced-CoLight trained on the same real routes, so their
+    # clean-network numbers compare directly against ft_real_normal_c3.
+    "colight_train_real": {
+        "controllers": ["colight", "advanced_colight"],
+        "configs": ["hzreal"],
+        "seeds": [42],
+        "blockages": ["none"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+        "extra": {"mode": "train_eval", "num_rounds": 100},
+    },
+    # --- LLM on the real (stochastic) routes: the 9-run grid ----------------
+    # normal / +text / -text, each x 3 seeds, all on the 7B weights. Three
+    # separate experiments (not one sweep) because the +text/-text difference
+    # is carried by `extra` (hide_blockage_info), which a single experiment
+    # would share across its whole product. hzreal so the seeds diverge; steps
+    # and config match ft_real_normal_c3 for a direct baseline comparison.
+    #
+    # Clean network, no incident. Validates the whole real-routes LLM pipeline
+    # end-to-end; run seed 1 of this first.
+    "llm_real_normal": {
+        "controllers": ["llm"],
+        "configs": ["hzreal"],
+        "seeds": [1, 2, 3],
+        "blockages": ["none"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+        "extra": {"llm_path": QWEN_7B_PATH},
+    },
+    # C3 blockage with the incident text shown in the prompt (the informed arm
+    # the prompt audit inspects via decisions.jsonl).
+    "llm_real_c3_text": {
+        "controllers": ["llm"],
+        "configs": ["hzreal"],
+        "seeds": [1, 2, 3],
+        "blockages": ["c3"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+        "extra": {"llm_path": QWEN_7B_PATH},
+    },
+    # C3 blockage injected physically but kept OUT of the prompt (ablation:
+    # does the LLM use the incident text, or only react to the queue numbers?).
+    "llm_real_c3_notext": {
+        "controllers": ["llm"],
+        "configs": ["hzreal"],
+        "seeds": [1, 2, 3],
+        "blockages": ["c3"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+        "extra": {"llm_path": QWEN_7B_PATH, "hide_blockage_info": True},
+    },
+    # C3 with the incident text WITHHELD from the upstream intersection
+    # (intersection_2_4, whose south exit holds the blockage and into which the
+    # queue spills) and shown only to the downstream approach intersection
+    # (intersection_2_3). scope="approach" == inform the approach intersection
+    # only (see runner.py --blockage_info_scope). Isolates whether the upstream
+    # intersection's knowledge -- the one that could meter its output into the
+    # blocked lane -- is what the informed arm's advantage comes from.
+    "llm_real_c3_approach_only": {
+        "controllers": ["llm"],
+        "configs": ["hzreal"],
+        "seeds": [1, 2, 3],
+        "blockages": ["c3"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+        "extra": {"llm_path": QWEN_7B_PATH, "blockage_info_scope": "approach"},
     },
     # Clean-network benchmark suite (supersedes run_report_suite.py). CoLight
     "report_suite": {
