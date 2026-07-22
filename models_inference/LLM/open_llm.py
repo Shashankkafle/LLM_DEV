@@ -25,6 +25,10 @@ class LLM_Inference:
 
     @staticmethod
     def _resolve_snapshot_path(llm_path):
+        # Expand a leading ~ ourselves: the runner is launched with a list argv
+        # (no shell), so a "~/..." path arrives literal and from_pretrained
+        # would treat ~ as a real directory name.
+        llm_path = os.path.expanduser(llm_path)
         # A HF cache folder (models--Org--Name) holds the real files under
         # snapshots/<hash>/ — point transformers at that inner directory.
         snapshots_dir = os.path.join(llm_path, "snapshots")

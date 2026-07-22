@@ -58,13 +58,15 @@ SHORT_TOKENS = {
 
 # --- experiments -------------------------------------------------------------
 
-# Local HF cache folder for the 7B weights the LLM grid runs on. runner.py's
-# --llm_path takes this folder directly; open_llm._resolve_snapshot_path
-# descends into snapshots/<revision>/ itself. NOTE: the model is NOT part of a
+# The one model the whole LLM grid runs on: a custom-fine-tuned, LoRA-merged
+# Qwen2.5-14B living outside the repo on the GPU box. runner.py's --llm_path
+# takes this directory directly (a merged model dir, not an HF cache folder, so
+# there is no snapshots/<hash>/ to descend into); open_llm expands the leading
+# ~ at load time. fp16 (~28 GB) fits the A40. NOTE: the model is NOT part of a
 # run's identity (see _identity_fields), so never run two different models over
 # the same config/seed/blockage combos in one logs tree -- the matrix would
 # treat them as the same result. Every experiment below uses this one model.
-QWEN_7B_PATH = "models/LLMs/models--Qwen--Qwen2.5-7B-Instruct"
+LLM_MODEL_PATH = "~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b"
 
 EXPERIMENTS = {
     # The blockage lever sweep (C1/C2/C3) on MaxPressure -- cheap, no GPU.
@@ -118,10 +120,11 @@ EXPERIMENTS = {
         "intersection_config": "three_lane",
         "extra": {"mode": "train_eval", "num_rounds": 100},
     },
-    # --- LLM on the real (stochastic) routes: the 9-run grid ----------------
-    # normal / +text / -text, each x 3 seeds, all on the 7B weights. Three
-    # separate experiments (not one sweep) because the +text/-text difference
-    # is carried by `extra` (hide_blockage_info), which a single experiment
+    # --- LLM on the real (stochastic) routes: the 12-run grid ---------------
+    # Four arms (normal / +text / -text / approach-only), each x 3 seeds, all
+    # on the fine-tuned 14B (LLM_MODEL_PATH). Separate experiments (not one
+    # sweep) because the per-arm prompt treatment is carried by `extra`
+    # (hide_blockage_info, blockage_info_scope), which a single experiment
     # would share across its whole product. hzreal so the seeds diverge; steps
     # and config match ft_real_normal_c3 for a direct baseline comparison.
     #
@@ -134,7 +137,7 @@ EXPERIMENTS = {
         "blockages": ["none"],
         "steps": 3600,
         "intersection_config": "three_lane",
-        "extra": {"llm_path": QWEN_7B_PATH},
+        "extra": {"llm_path": LLM_MODEL_PATH},
     },
     # C3 blockage with the incident text shown in the prompt (the informed arm
     # the prompt audit inspects via decisions.jsonl).
@@ -145,7 +148,7 @@ EXPERIMENTS = {
         "blockages": ["c3"],
         "steps": 3600,
         "intersection_config": "three_lane",
-        "extra": {"llm_path": QWEN_7B_PATH},
+        "extra": {"llm_path": LLM_MODEL_PATH},
     },
     # C3 blockage injected physically but kept OUT of the prompt (ablation:
     # does the LLM use the incident text, or only react to the queue numbers?).
@@ -156,7 +159,7 @@ EXPERIMENTS = {
         "blockages": ["c3"],
         "steps": 3600,
         "intersection_config": "three_lane",
-        "extra": {"llm_path": QWEN_7B_PATH, "hide_blockage_info": True},
+        "extra": {"llm_path": LLM_MODEL_PATH, "hide_blockage_info": True},
     },
     # C3 with the incident text WITHHELD from the upstream intersection
     # (intersection_2_4, whose south exit holds the blockage and into which the
@@ -172,7 +175,7 @@ EXPERIMENTS = {
         "blockages": ["c3"],
         "steps": 3600,
         "intersection_config": "three_lane",
-        "extra": {"llm_path": QWEN_7B_PATH, "blockage_info_scope": "approach"},
+        "extra": {"llm_path": LLM_MODEL_PATH, "blockage_info_scope": "approach"},
     },
     # Clean-network benchmark suite (supersedes run_report_suite.py). CoLight
     "report_suite": {
