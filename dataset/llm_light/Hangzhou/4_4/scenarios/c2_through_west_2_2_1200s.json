@@ -1,0 +1,16 @@
+{
+  "scenario_name": "c2_through_west_2_2_1200s",
+  "description": "C2 (placement + duration lever, 1200 s -- expected winner). IDENTICAL lane and position to C1 (road_1_2_0_1, 10 m upstream); ONLY end_step changes, so the C1->C2 delta is the pure duration lever. 1200 s is the empirically-anchored ceiling (Sun et al.), so realism stays citable. Blocks the highest-demand central through lane (intersection_2_2 West approach, 206 vehicles) across the full 600-1200 s demand peak. Same dual message as C1: intersection_2_2 approach-full (West / through / segment 1, ETWT phase); intersection_1_2 downstream (East exit, 1 of 3 lanes, 762.8 m past on the 772.8 m link). start 500, end 1700 -> 1900 s of horizon left to recover.",
+  "blockages": [
+    {
+      "blockage_id": "c2",
+      "lane_id": "road_1_2_0_1",
+      "position": 10.0,
+      "start_step": 500,
+      "end_step": 1700,
+      "method": "obstacle_vehicle",
+      "severity": 1.0,
+      "cause": "collision"
+    }
+  ]
+}
