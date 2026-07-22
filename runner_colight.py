@@ -534,6 +534,9 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_c
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--test_name", type=str, default="colight")
+    parser.add_argument("--run_group", type=str, default=None,
+                        help="Nest the run under logs/<run_group>/ (used by "
+                             "run_matrix.py to group a sweep's runs).")
     parser.add_argument("--variant", type=str, default="colight",
                         choices=list(VARIANTS.keys()),
                         help="colight (lane_num_vehicle) or advanced_colight "
@@ -583,7 +586,7 @@ def main(args):
 
     conf = INTERSECTION_CONFIGS[args.intersection_config]
     features, agent_conf = VARIANTS[args.variant]
-    records_dir, _ = create_run_dirs(args.test_name)
+    records_dir, _ = create_run_dirs(args.test_name, args.run_group)
 
     manifest = build_manifest(args.variant, args, args.intersection_config, conf,
                               extra={"mode": args.mode})

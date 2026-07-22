@@ -26,6 +26,9 @@ from configurations import (
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--test_name", type=str, default="rough_test")
+    parser.add_argument("--run_group", type=str, default=None,
+                        help="Nest the run under logs/<run_group>/ (used by "
+                             "run_matrix.py to group a sweep's runs).")
     parser.add_argument("--simulation_steps", type=int, default=DEFAULT_SIMULATION_STEPS)
     parser.add_argument("--simulation_config", type=str, default=DEFAULT_SIMULATION_CONFIG)
     parser.add_argument("--llm_path", type=str, default=LLM_DEFAULT_PATH)
@@ -133,7 +136,8 @@ def main(args):
     manifest["llm"] = describe() if describe else None
     ctx = setup_run(conf, args.test_name, args.simulation_config, run_meta,
                     use_gui=args.use_gui, seed=args.seed, verbose_metrics=True,
-                    blockage_manager=blockage_manager, manifest=manifest)
+                    blockage_manager=blockage_manager, manifest=manifest,
+                    run_group=args.run_group)
 
     def decide(step, intersection_id, handler):
         state_data = ctx.env.get_state(intersection_id)

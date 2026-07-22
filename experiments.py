@@ -1,0 +1,217 @@
+"""Declarative experiment definitions for the run matrix.
+
+An experiment is a named sweep: the cartesian product of controllers x
+simulation configs x seeds x blockage arms. run_matrix.py expands it into
+individual runs; build_results.py aggregates their manifests.
+
+Two ideas keep the run data manageable:
+
+  * Aliases. Short names (hz1, c1) resolve to full sumocfg / scenario paths, so
+    experiment definitions stay readable and a path change touches one place.
+
+  * Experiment-independent identity. run_identity() distills a run down to what
+    actually determines its result (controller, routes, timing, seed, blockage).
+    The experiment name is NOT part of it, so the SAME combo run under two
+    experiments is recognised as one result -- that is what lets run_matrix
+    skip or reuse instead of re-running.
+"""
+import json
+from itertools import product
+from pathlib import Path
+
+# --- aliases -----------------------------------------------------------------
+
+CONFIGS = {
+    "hz1": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_cfphys.sumocfg",
+    "jinan1": "dataset/llm_light/Jinan/3_4/anon_3_4_jinan_real_cfphys.sumocfg",
+}
+
+_HZ_SCENARIOS = "dataset/llm_light/Hangzhou/4_4/scenarios"
+BLOCKAGES = {
+    "none": None,
+    "c1": f"{_HZ_SCENARIOS}/c1_through_west_2_2_600s.json",
+    "c2": f"{_HZ_SCENARIOS}/c2_through_west_2_2_1200s.json",
+    "c3": f"{_HZ_SCENARIOS}/c3_through_north_2_3_1200s.json",
+    "c4": f"{_HZ_SCENARIOS}/c4_two_lane_west_2_2_1200s.json",
+}
+
+# controller token -> how run_matrix launches it. The token is what the run's
+# manifest records as "controller" (colight/advanced_colight go in as their
+# --variant), so identity matching keys off it directly.
+CONTROLLERS = {
+    "fixedtime": {"script": "runner_baselines.py", "kind": "baseline"},
+    "maxpressure": {"script": "runner_baselines.py", "kind": "baseline"},
+    "colight": {"script": "runner_colight.py", "kind": "colight"},
+    "advanced_colight": {"script": "runner_colight.py", "kind": "colight"},
+    "llm": {"script": "runner.py", "kind": "llm"},
+}
+
+SHORT_TOKENS = {
+    "fixedtime": "ft", "maxpressure": "mp",
+    "colight": "colight", "advanced_colight": "advcolight", "llm": "llm",
+}
+
+
+# --- experiments -------------------------------------------------------------
+
+EXPERIMENTS = {
+    # The blockage lever sweep (C1/C2/C3) on MaxPressure -- cheap, no GPU.
+    "mp_blockage_sweep": {
+        "controllers": ["maxpressure"],
+        "configs": ["hz1"],
+        "seeds": [1, 2, 3],
+        "blockages": ["none", "c1", "c2", "c3"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+    },
+    # C3 lock-in gate: MP x 3 seeds on clean vs C3. Accept C3 if the C3-vs-none
+    # ATT delta is >= ~5x the clean seed SD (build_results' delta_over_clean_spread).
+    # CoLight/Adv-CoLight evals join this folder via `--run_group c3_decision`
+    # (they eval clean weights, so they run outside the matrix -- see notes).
+    "c3_decision": {
+        "controllers": ["maxpressure"],
+        "configs": ["hz1"],
+        "seeds": [1, 2, 3],
+        "blockages": ["none", "c3"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+    },
+    # Seed spread on the clean network + FixedTime gridlock canary.
+    "baseline_seed_spread": {
+        "controllers": ["maxpressure", "fixedtime"],
+        "configs": ["hz1"],
+        "seeds": [1, 2],
+        "blockages": ["none"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+    },
+    # Clean-network benchmark suite (supersedes run_report_suite.py). CoLight
+    "report_suite": {
+        "controllers": ["fixedtime", "maxpressure", "colight", "advanced_colight"],
+        "configs": ["hz1", "jinan1"],
+        "seeds": [42],
+        "blockages": ["none"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+        "extra": {"mode": "train_eval", "num_rounds": 100},
+    },
+}
+
+
+def _scenario_name(path):
+    if not path:
+        return "none"
+    try:
+        with open(path) as f:
+            return json.load(f).get("scenario_name") or Path(path).stem
+    except OSError:
+        return Path(path).stem
+
+
+def make_combo(controller, config_alias, seed, blockage_alias, steps,
+               intersection_config, extra):
+    """Resolve aliases into a fully-specified run description."""
+    scenario_path = BLOCKAGES[blockage_alias]
+    return {
+        "controller": controller,
+        "config_alias": config_alias,
+        "simulation_config": CONFIGS[config_alias],
+        "seed": seed,
+        "blockage_alias": blockage_alias,
+        "blockage_scenario": scenario_path,
+        "blockage_name": _scenario_name(scenario_path),
+        "steps": steps,
+        "intersection_config": intersection_config,
+        "extra": dict(extra or {}),
+    }
+
+
+def expand_experiment(name, overrides=None):
+    """Expand an experiment into its list of combos. overrides may replace
+    'controllers', 'configs', 'seeds', or 'blockages' (for ad-hoc seed tweaks
+    without editing the preset)."""
+    if name not in EXPERIMENTS:
+        raise KeyError(f"Unknown experiment '{name}'. "
+                       f"Known: {sorted(EXPERIMENTS)}")
+    exp = dict(EXPERIMENTS[name])
+    overrides = overrides or {}
+    controllers = overrides.get("controllers") or exp["controllers"]
+    configs = overrides.get("configs") or exp.get("configs") or [exp["config"]]
+    seeds = overrides.get("seeds") or exp["seeds"]
+    blockages = overrides.get("blockages") or exp["blockages"]
+    steps = overrides.get("steps") or exp.get("steps", 3600)
+    iconf = exp.get("intersection_config", "three_lane")
+    extra = exp.get("extra", {})
+
+    _check_aliases(controllers, configs, blockages)
+    combos = []
+    for controller, config_alias, seed, blk in product(
+            controllers, configs, seeds, blockages):
+        combos.append(make_combo(controller, config_alias, seed, blk,
+                                 steps, iconf, extra))
+    return combos
+
+
+def _check_aliases(controllers, configs, blockages):
+    unknown = ([c for c in controllers if c not in CONTROLLERS]
+               + [c for c in configs if c not in CONFIGS]
+               + [b for b in blockages if b not in BLOCKAGES])
+    if unknown:
+        raise KeyError(f"Unknown alias(es): {unknown}")
+
+
+def combo_slug(combo):
+    """Human-friendly run-dir name, e.g. mp_hz1_c2_seed1. Not load-bearing --
+    build_results reads identity from the manifest, not this."""
+    token = SHORT_TOKENS.get(combo["controller"], combo["controller"])
+    seed = "dflt" if combo["seed"] is None else combo["seed"]
+    return f"{token}_{combo['config_alias']}_{combo['blockage_alias']}_seed{seed}"
+
+
+# --- identity: what makes two runs the same result ---------------------------
+
+def _identity_fields(controller, simulation_config, intersection_config, steps,
+                     seed, blockage_name, hide_info, info_scope, num_rounds):
+    return (
+        controller,
+        Path(simulation_config).name if simulation_config else None,
+        intersection_config,
+        steps,
+        seed,
+        blockage_name or "none",
+        bool(hide_info),
+        info_scope or "both",
+        num_rounds,
+    )
+
+
+def identity_from_combo(combo):
+    extra = combo["extra"]
+    return _identity_fields(
+        combo["controller"], combo["simulation_config"],
+        combo["intersection_config"], combo["steps"], combo["seed"],
+        combo["blockage_name"], extra.get("hide_blockage_info", False),
+        extra.get("blockage_info_scope", "both"), extra.get("num_rounds"))
+
+
+def identity_from_manifest(m):
+    env = m.get("environment") or {}
+    args = m.get("args") or {}
+    blk = m.get("blockage") or {}
+    return _identity_fields(
+        m.get("controller"), env.get("simulation_config"),
+        env.get("intersection_config"), env.get("simulation_steps"),
+        env.get("seed"), blk.get("scenario_name", "none"),
+        blk.get("hide_blockage_info", False),
+        blk.get("blockage_info_scope", "both"), args.get("num_rounds"))
+
+
+def identity_key(identity):
+    return "|".join("" if x is None else str(x) for x in identity)
+
+
+def config_key(identity):
+    """Identity with the seed dropped -- groups replicate seeds of one config."""
+    fields = list(identity)
+    fields[4] = None  # seed is field index 4 in _identity_fields
+    return identity_key(fields)

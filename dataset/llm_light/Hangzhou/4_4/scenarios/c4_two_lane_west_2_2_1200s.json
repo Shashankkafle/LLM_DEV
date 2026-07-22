@@ -1,0 +1,26 @@
+{
+  "scenario_name": "c4_two_lane_west_2_2_1200s",
+  "description": "C4 (last-resort severity escalation, run ONLY if C3 fails its gate). A severe TWO-LANE incident at intersection_2_2's West approach: C2's through lane (road_1_2_0_1) PLUS the adjacent left-turn lane (road_1_2_0_2), both 10 m upstream, both for the full C2 window (500-1700). Kills two movements at the busiest central approach (W->E through and W->left) while the right-turn lane (road_1_2_0_0) still trickles -- a real multi-lane accident class, but a stronger claim to defend, hence last resort. Same duration/position as C2 so the escalation is purely 'one lane -> two lanes'. Gate is unchanged: MP delta-ATT vs the clean seed spread.",
+  "blockages": [
+    {
+      "blockage_id": "c4_through",
+      "lane_id": "road_1_2_0_1",
+      "position": 10.0,
+      "start_step": 500,
+      "end_step": 1700,
+      "method": "obstacle_vehicle",
+      "severity": 1.0,
+      "cause": "collision"
+    },
+    {
+      "blockage_id": "c4_left",
+      "lane_id": "road_1_2_0_2",
+      "position": 10.0,
+      "start_step": 500,
+      "end_step": 1700,
+      "method": "obstacle_vehicle",
+      "severity": 1.0,
+      "cause": "collision"
+    }
+  ]
+}
