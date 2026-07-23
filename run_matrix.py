@@ -69,6 +69,13 @@ def build_command(combo, run_group, test_name):
             cmd += ["--hide_blockage_info"]
         if extra.get("blockage_info_scope"):
             cmd += ["--blockage_info_scope", extra["blockage_info_scope"]]
+        # Batching is a throughput choice, not part of run identity -- these let
+        # an experiment force the sequential path or cap the batch, but a
+        # batched and a sequential run of the same combo still share an identity.
+        if extra.get("sequential"):
+            cmd += ["--sequential"]
+        if extra.get("max_batch_size"):
+            cmd += ["--max_batch_size", str(extra["max_batch_size"])]
     return cmd
 
 
