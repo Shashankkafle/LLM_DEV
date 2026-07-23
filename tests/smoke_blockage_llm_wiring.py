@@ -30,11 +30,15 @@ class StubLLM:
     def inference(self, prompt):
         return "analysis...<signal>ETWT</signal>"
 
+    def inference_batch(self, prompts):
+        return [self.inference(p) for p in prompts]
+
 
 runner.LLM_Inference = StubLLM
 
 args = argparse.Namespace(
     test_name="blockage_wiring_smoke",
+    run_group=None,
     simulation_steps=1000,
     simulation_config="simulations/single_intersection/run.sumocfg",
     llm_path="stub",

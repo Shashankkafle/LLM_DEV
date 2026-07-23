@@ -87,6 +87,32 @@ LLM, no GPU):
 PYTHONPATH=. python tests/smoke_blockage_prompt_leakage.py
 ```
 
+## 4b. Batched-inference equivalence gate (run once, on this box)
+
+`runner.py` batches every intersection whose green window ends on the same step
+into one `generate()` call by default — that's what gets a full run to ~6 h
+instead of ~40 h. Batching is provably equivalent to per-intersection inference
+on order-stable arithmetic (CPU/fp32: byte-identical outputs, verified in CI),
+but on **fp16 GPU a near-tie logit can rarely flip a token**, so certify it once
+against the real model at the production token budget before trusting the grid:
+
+```bash
+python tests/verify_batch_equivalence.py \
+    --llm_path ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b \
+    --max_new_tokens 1024
+```
+
+Acceptance: **`<signal> mismatches: 0`** and `size-1 batch == single: True`.
+A nonzero raw-text mismatch with zero signal mismatches is the benign fp16 case
+(the decision is unchanged). If any `<signal>` flips, run the grid with
+`--sequential` (add it in `experiments.py` `extra`) or investigate before pooling
+results. Note: greedy decoding (`temperature 0.0`) → runs are still deterministic
+run-to-run for a given seed; batched vs sequential is the only comparison at issue.
+
+If a wide batch ever OOMs, cap it with `--max_batch_size 8` (the runner also
+auto-falls-back to per-prompt on any batch failure, so an OOM degrades instead
+of crashing the step).
+
 ## 5. Run in order — seed 1 first, verify, then the rest
 
 Long runs: wrap each in `tmux`/`nohup` and tee a log. A full 3600-step 14B run

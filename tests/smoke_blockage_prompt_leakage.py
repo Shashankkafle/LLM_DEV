@@ -114,6 +114,9 @@ class StubLLM:
     def inference(self, prompt):
         return "analysis...<signal>ETWT</signal>"
 
+    def inference_batch(self, prompts):
+        return [self.inference(p) for p in prompts]
+
 
 runner.LLM_Inference = StubLLM
 
@@ -121,6 +124,7 @@ runner.LLM_Inference = StubLLM
 def run_once(test_name, sumocfg, scenario, hide_info):
     args = argparse.Namespace(
         test_name=test_name,
+        run_group=None,
         simulation_steps=SIM_STEPS,
         simulation_config=str(sumocfg),
         llm_path="stub",
@@ -130,6 +134,8 @@ def run_once(test_name, sumocfg, scenario, hide_info):
         hide_blockage_info=hide_info,
         blockage_info_scope="both",
         intersection_config="single_intersection",
+        sequential=False,
+        max_batch_size=0,
     )
     runner.main(args)
     return sorted(Path("logs").glob(f"{test_name}_*"))[-1]

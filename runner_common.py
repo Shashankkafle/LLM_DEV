@@ -114,6 +114,20 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
     return RunContext(records_dir, env, recorder, replay_recorder, handlers)
 
 
+def _close_and_summarize(ctx, status):
+    """Close SUMO first (it flushes the statistics file on close), then write
+    the final summary -- and finalize the manifest no matter what, so a run dir
+    is never left claiming status "running" even if closing or summarizing
+    raises. Shared by both control loops so the teardown order cannot drift.
+    """
+    try:
+        ctx.env.close()
+        summary = ctx.recorder.save_final_summary()
+    finally:
+        finalize_manifest(ctx.records_dir, status)
+    return summary
+
+
 def run_control_loop(ctx, simulation_steps, decide):
     """Drive the simulation with per-intersection decisions. Returns the final
     summary dict.
@@ -123,9 +137,8 @@ def run_control_loop(ctx, simulation_steps, decide):
     measurement behavior:
       - one network-wide AWT sample per decision point,
       - early exit once SUMO expects no more vehicles,
-      - close SUMO first (it flushes the statistics file on close), then write
-        the final summary -- also on a crash, so a partial run still leaves an
-        honest record (the manifest then carries status "crashed").
+      - close-then-summarize teardown (also on a crash, so a partial run still
+        leaves an honest record; the manifest then carries status "crashed").
     """
     status = "crashed"
     try:
@@ -143,11 +156,46 @@ def run_control_loop(ctx, simulation_steps, decide):
                 break
         status = "completed"
     finally:
-        # finalize_manifest must run even if closing SUMO or summarizing
-        # fails: a run dir should never be left claiming status "running".
-        try:
-            ctx.env.close()
-            summary = ctx.recorder.save_final_summary()
-        finally:
-            finalize_manifest(ctx.records_dir, status)
+        summary = _close_and_summarize(ctx, status)
+    return summary
+
+
+def run_control_loop_batched(ctx, simulation_steps, decide_batch):
+    """Like run_control_loop, but every intersection switching on the same step
+    is handed to ``decide_batch`` together, so a batched controller can run
+    their decisions as one inference call. Returns the final summary dict.
+
+    ``decide_batch(step, pending)`` -> {intersection_id: next_phase}, where
+    pending is the list of (intersection_id, handler) switching this step;
+    decide_batch owns all per-decision recording.
+
+    This is behaviourally identical to run_control_loop: the simulation advances
+    exactly once per step (``env.step()``) before any decision, and setting a
+    phase changes only a signal -- it never moves vehicles -- so reading every
+    switching intersection's state up front, before any phase is applied, yields
+    the same inputs as deciding them one at a time. The shared measurement
+    behavior (one AWT sample per decision, early exit, close-then-summarize) is
+    preserved: record_decision_wait() is still called once per decision.
+    """
+    status = "crashed"
+    try:
+        for step in range(simulation_steps):
+            ctx.env.step()
+            ctx.recorder.record_step_summary(step)
+            pending = []
+            for intersection_id, handler in ctx.handlers.items():
+                handler.step()
+                if handler.switch_phase:
+                    pending.append((intersection_id, handler))
+            if pending:
+                next_phases = decide_batch(step, pending)
+                for intersection_id, handler in pending:
+                    ctx.recorder.record_decision_wait()
+                    handler.activate_phase(next_phases[intersection_id])
+            if traci.simulation.getMinExpectedNumber() <= 0:
+                print(f"No more vehicles expected at step {step}, stopping early.")
+                break
+        status = "completed"
+    finally:
+        summary = _close_and_summarize(ctx, status)
     return summary

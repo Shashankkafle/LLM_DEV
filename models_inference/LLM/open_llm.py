@@ -21,6 +21,8 @@ class LLM_Inference:
         self._logged_first_prompt = False
         # Set by every inference() call, read by the runner's recorder.
         self.last_usage = None
+        # Per-sequence token counts from the most recent inference_batch().
+        self.last_usage_batch = None
         self.last_formatted_prompt = None
 
     @staticmethod
@@ -38,17 +40,23 @@ class LLM_Inference:
                 return os.path.join(snapshots_dir, hashes[0])
         return llm_path
 
-    def initialize_llm(self):
+    def initialize_llm(self, torch_dtype=torch.float16, device_map="auto"):
         if torch.cuda.is_available():
             print(f"[Info] CUDA available: {torch.cuda.get_device_name(0)}")
         else:
             print("[Warning] CUDA not available, running on CPU")
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.llm_path, trust_remote_code=True)
+        # Batched generation needs left-padding for a causal LM (real tokens
+        # right-aligned so generation continues correctly) and a pad token.
+        # Harmless to the single-prompt inference() path, which never pads.
+        self.tokenizer.padding_side = "left"
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
             self.llm_path,
-            torch_dtype=torch.float16,
-            device_map="auto",
+            torch_dtype=torch_dtype,
+            device_map=device_map,
             trust_remote_code=True
         )
         device_map = getattr(self.model, "hf_device_map", None)
@@ -162,3 +170,83 @@ class LLM_Inference:
         }
         self.last_formatted_prompt = formatted_prompt
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+    def inference_batch(self, raw_prompts):
+        """Batched sibling of inference(): one generate() over many prompts.
+
+        With greedy decoding (LLM_DO_SAMPLE=False), left-padding + the attention
+        mask make every prompt generate as if it were run alone -- the outputs
+        are the single-call outputs, modulo GPU float-point reduction order
+        (verified by tests/verify_batch_equivalence.py). Returns decoded
+        completions aligned to raw_prompts, and fills last_usage_batch
+        (per-sequence token counts) + last_formatted_prompt so the recorder can
+        attribute usage exactly as the single path does.
+
+        Notes / assumptions:
+          - Equivalence is only claimed under greedy decoding; with sampling,
+            one shared RNG stream would order draws differently than N calls.
+          - Correct position ids under left-padding rely on the model deriving
+            them from the attention mask (Qwen2 and every HF-standard causal LM
+            do this); an exotic trust_remote_code model that ignores the mask
+            would need explicit position_ids.
+        """
+        if not raw_prompts:
+            self.last_usage_batch = []
+            return []
+
+        formatted = [self._format_prompt(p) for p in raw_prompts]
+        # padding=True left-pads to the longest sequence (padding_side set in
+        # initialize_llm); the attention mask masks the pad tokens out entirely.
+        inputs = self.tokenizer(
+            formatted, return_tensors="pt", padding=True
+        ).to(self.model.device)
+
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=LLM_MAX_NEW_TOKENS,
+                temperature=LLM_TEMPERATURE,
+                do_sample=LLM_DO_SAMPLE,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
+
+        # Left-padding makes every real prompt end at the same column, so the
+        # generated tokens start at the shared padded input_length for all rows.
+        input_length = inputs.input_ids.shape[1]
+        stop_ids = self._stop_token_ids()
+        texts, usage = [], []
+        for i in range(len(formatted)):
+            generated_tokens = outputs[i, input_length:]
+            texts.append(
+                self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            )
+            usage.append({
+                "prompt_tokens": int(inputs.attention_mask[i].sum()),
+                "completion_tokens": self._completion_length(generated_tokens, stop_ids),
+            })
+        self.last_usage_batch = usage
+        self.last_formatted_prompt = formatted[0]
+        return texts
+
+    def _stop_token_ids(self):
+        """The token ids that end generation. Used to count batched completion
+        lengths the way the single path does -- up to and including the stop
+        token -- instead of counting non-pad tokens, which would drop the
+        terminal EOS whenever pad_token was aliased to eos (see initialize_llm)."""
+        stop = getattr(self.model.generation_config, "eos_token_id", None)
+        if stop is None:
+            stop = self.tokenizer.eos_token_id
+        if isinstance(stop, int):
+            stop = [stop]
+        return set(stop or [])
+
+    @staticmethod
+    def _completion_length(generated_tokens, stop_ids):
+        """Tokens the model actually produced for one row: up to and including
+        the first stop token (matching the single path's generated length),
+        excluding the right-padding that fills finished rows to the batch width.
+        Robust to pad_token_id == eos_token_id."""
+        for position, token in enumerate(generated_tokens.tolist()):
+            if token in stop_ids:
+                return position + 1
+        return int(generated_tokens.shape[0])

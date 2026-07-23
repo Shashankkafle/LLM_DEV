@@ -54,6 +54,9 @@ class StubLLM:
     def inference(self, prompt):
         return "analysis...<signal>ETWT</signal>"
 
+    def inference_batch(self, prompts):
+        return [self.inference(p) for p in prompts]
+
 
 runner.LLM_Inference = StubLLM
 
@@ -190,6 +193,7 @@ def run_matrix():
         t0 = time.time()
         runner.main(argparse.Namespace(
             test_name=f"pmx_{run_id}",
+            run_group=None,
             simulation_steps=STEPS,
             simulation_config=SUMOCFG,
             llm_path="stub",

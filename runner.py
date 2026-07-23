@@ -10,7 +10,9 @@ import re
 import time
 
 from models_inference.LLM.open_llm import LLM_Inference
-from runner_common import setup_run, run_control_loop, build_blockage_manager
+from runner_common import (
+    setup_run, run_control_loop, run_control_loop_batched, build_blockage_manager,
+)
 from utils.prompt_builder import get_prompt
 from utils.run_manifest import build_manifest, save_manifest
 from configurations import (
@@ -62,7 +64,25 @@ def parse_args():
         default=DEFAULT_INTERSECTION_CONFIG_NAME,
         help="Which intersection config (from configurations.INTERSECTION_CONFIGS) to use.",
     )
+    parser.add_argument(
+        "--sequential", action="store_true",
+        help="Decide one intersection at a time (the pre-batching path). Default "
+             "batches every intersection switching on the same step into one "
+             "inference call; --sequential forces the old behavior.")
+    parser.add_argument(
+        "--max_batch_size", type=int, default=0,
+        help="Cap the per-step inference batch (0 = no cap, one batch per step). "
+             "Lower it if a wide batch pressures GPU memory; results are "
+             "unaffected (each sequence is decoded independently).")
     return parser.parse_args()
+
+
+def _chunk(items, size):
+    """Split items into consecutive chunks of at most `size` (size <= 0 -> one
+    chunk holding everything)."""
+    if size and size > 0:
+        return [items[i:i + size] for i in range(0, len(items), size)]
+    return [items]
 
 
 def parse_llm_signal(raw_text):
@@ -129,6 +149,11 @@ def main(args):
         "blockage_scenario": args.blockage_scenario,
         "hide_blockage_info": args.hide_blockage_info,
         "blockage_info_scope": args.blockage_info_scope,
+        # Recorded so final_summary consumers can tell batched runs apart:
+        # under batching, a decision's inference_latency_ms is the shared batch
+        # wall-time, not a per-call measurement.
+        "batched": not getattr(args, "sequential", False),
+        "max_batch_size": getattr(args, "max_batch_size", 0),
     }
     manifest = build_manifest("llm", args, args.intersection_config, conf)
     # getattr guards: smoke tests swap in stub LLMs without describe()/last_usage.
@@ -138,101 +163,6 @@ def main(args):
                     use_gui=args.use_gui, seed=args.seed, verbose_metrics=True,
                     blockage_manager=blockage_manager, manifest=manifest,
                     run_group=args.run_group)
-
-    def decide(step, intersection_id, handler):
-        state_data = ctx.env.get_state(intersection_id)
-        previous_phase = handler.current_phase
-
-        # Always compute the structured blockage facts, even when the prompt
-        # hides them: the record must show what the model was NOT told.
-        blockage_facts = ctx.env.describe_blockages(intersection_id)
-        exit_blockage_facts = ctx.env.describe_exit_blockages(intersection_id)
-
-        error = None
-        token_usage = None
-        blockage_info_in_prompt = None
-
-        # Classify every decision point into exactly one outcome so that
-        # "nothing to do" is never confused with "model failed".
-        if state_is_empty(state_data):
-            # No vehicles waiting or approaching: holding the current phase
-            # is correct. Skip the (expensive) LLM call entirely.
-            decision_type = "no_action_empty"
-            prompt = None
-            llm_output = None
-            latency_ms = 0.0
-            extracted_signal = None
-            next_phase = previous_phase
-        else:
-            if args.hide_blockage_info:
-                blockages = exit_blockages = None
-            else:
-                scope = args.blockage_info_scope
-                blockages = (blockage_facts
-                             if scope in ("both", "approach") else None)
-                exit_blockages = (exit_blockage_facts
-                                  if scope in ("both", "exit") else None)
-            blockage_info_in_prompt = bool(blockages) or bool(exit_blockages)
-            prompt = get_prompt(state_dict=state_data, blockages=blockages,
-                                exit_blockages=exit_blockages)
-
-            start_time = time.time()
-            try:
-                llm_output = llm.inference(prompt)
-            except Exception as exc:
-                llm_output = None
-                error = repr(exc)
-            latency_ms = (time.time() - start_time) * 1000
-            if error is None:
-                token_usage = getattr(llm, "last_usage", None)
-                capture_example_formatted_prompt()
-
-            if error is not None:
-                # Inference itself failed (CUDA error, OOM, ...). Hold the
-                # current phase and keep the run going; the error is recorded
-                # per decision and counted in the final summary.
-                decision_type = "inference_error"
-                extracted_signal = None
-                next_phase = previous_phase
-                print(f"[Warning] LLM inference failed at step {step}, "
-                      f"intersection {intersection_id}: {error}. "
-                      f"Holding {previous_phase}.")
-            else:
-                # Raw parse result: None if no <signal> tag, otherwise the
-                # tag's contents (which may still be an invalid phase name).
-                extracted_signal = parse_llm_signal(llm_output)
-                if extracted_signal in conf["phases"]:
-                    decision_type = "llm_decision"
-                    next_phase = extracted_signal
-                elif is_no_action_signal(extracted_signal):
-                    # Model explicitly judged no phase change is needed
-                    # (e.g. <signal>None</signal>). Hold the current phase;
-                    # this is a valid decision, not a failure.
-                    decision_type = "llm_no_action"
-                    next_phase = previous_phase
-                else:
-                    # Non-empty intersection but the model gave no usable answer
-                    # (truncated / no tag) or named an invalid phase. Hold the
-                    # current phase, but record this as a genuine failure.
-                    decision_type = "fallback_parse_error"
-                    next_phase = previous_phase
-                    print(f"[Warning] No valid signal ('{extracted_signal}') at step {step}, "
-                          f"intersection {intersection_id}. Holding {previous_phase}.")
-
-        ctx.recorder.record_decision(
-            step=step, state_dict=state_data, prompt=prompt,
-            llm_output=llm_output, previous_phase=previous_phase,
-            final_phase=next_phase, decision_type=decision_type,
-            latency_ms=latency_ms,
-            extracted_signal=extracted_signal,
-            intersection_id=intersection_id,
-            blockage_facts=blockage_facts,
-            exit_blockage_facts=exit_blockage_facts,
-            blockage_info_in_prompt=blockage_info_in_prompt,
-            token_usage=token_usage,
-            error=error,
-        )
-        return next_phase
 
     def capture_example_formatted_prompt():
         """Store the first fully-templated prompt (system prompt + chat
@@ -246,7 +176,191 @@ def main(args):
         manifest["llm"]["example_formatted_prompt"] = formatted
         save_manifest(ctx.records_dir, manifest)
 
-    run_control_loop(ctx, args.simulation_steps, decide)
+    def prepare_decision(intersection_id, handler):
+        """Everything up to (but excluding) the LLM call: read the state, decide
+        whether the intersection is empty, and build its prompt. Shared by the
+        sequential and batched drivers so the two cannot diverge.
+
+        The structured blockage facts are always computed, even when the prompt
+        hides them, so the record shows what the model was NOT told.
+        """
+        state_data = ctx.env.get_state(intersection_id)
+        blockage_facts = ctx.env.describe_blockages(intersection_id)
+        exit_blockage_facts = ctx.env.describe_exit_blockages(intersection_id)
+        req = {
+            "intersection_id": intersection_id,
+            "state_data": state_data,
+            "previous_phase": handler.current_phase,
+            "blockage_facts": blockage_facts,
+            "exit_blockage_facts": exit_blockage_facts,
+            "empty": state_is_empty(state_data),
+            "prompt": None,
+            "blockage_info_in_prompt": None,
+        }
+        if not req["empty"]:
+            if args.hide_blockage_info:
+                blockages = exit_blockages = None
+            else:
+                scope = args.blockage_info_scope
+                blockages = (blockage_facts
+                             if scope in ("both", "approach") else None)
+                exit_blockages = (exit_blockage_facts
+                                  if scope in ("both", "exit") else None)
+            req["blockage_info_in_prompt"] = bool(blockages) or bool(exit_blockages)
+            req["prompt"] = get_prompt(state_dict=state_data, blockages=blockages,
+                                       exit_blockages=exit_blockages)
+        return req
+
+    def finalize_decision(step, req, llm_output, latency_ms, token_usage, error):
+        """Classify the outcome, record the decision, return the next phase.
+        Shared by both drivers. Every decision point maps to exactly one
+        decision_type so "nothing to do" is never confused with "model failed".
+        """
+        previous_phase = req["previous_phase"]
+        intersection_id = req["intersection_id"]
+        if req["empty"]:
+            # No vehicles waiting or approaching: holding is correct; no LLM
+            # call was made.
+            decision_type = "no_action_empty"
+            extracted_signal = None
+            next_phase = previous_phase
+        elif error is not None:
+            # Inference itself failed (CUDA error, OOM, ...). Hold the current
+            # phase and keep the run going; the error is recorded per decision
+            # and counted in the final summary.
+            decision_type = "inference_error"
+            extracted_signal = None
+            next_phase = previous_phase
+            print(f"[Warning] LLM inference failed at step {step}, "
+                  f"intersection {intersection_id}: {error}. "
+                  f"Holding {previous_phase}.")
+        else:
+            # Raw parse result: None if no <signal> tag, otherwise the tag's
+            # contents (which may still be an invalid phase name).
+            extracted_signal = parse_llm_signal(llm_output)
+            if extracted_signal in conf["phases"]:
+                decision_type = "llm_decision"
+                next_phase = extracted_signal
+            elif is_no_action_signal(extracted_signal):
+                # Model explicitly judged no phase change is needed
+                # (e.g. <signal>None</signal>). A valid "hold", not a failure.
+                decision_type = "llm_no_action"
+                next_phase = previous_phase
+            else:
+                # Non-empty intersection but no usable answer (truncated / no
+                # tag) or an invalid phase name. Hold, but record a real failure.
+                decision_type = "fallback_parse_error"
+                next_phase = previous_phase
+                print(f"[Warning] No valid signal ('{extracted_signal}') at step {step}, "
+                      f"intersection {intersection_id}. Holding {previous_phase}.")
+
+        ctx.recorder.record_decision(
+            step=step, state_dict=req["state_data"], prompt=req["prompt"],
+            llm_output=llm_output, previous_phase=previous_phase,
+            final_phase=next_phase, decision_type=decision_type,
+            latency_ms=latency_ms, extracted_signal=extracted_signal,
+            intersection_id=intersection_id,
+            blockage_facts=req["blockage_facts"],
+            exit_blockage_facts=req["exit_blockage_facts"],
+            blockage_info_in_prompt=req["blockage_info_in_prompt"],
+            token_usage=token_usage, error=error,
+        )
+        return next_phase
+
+    def decide(step, intersection_id, handler):
+        """Sequential driver: one intersection, one LLM call."""
+        req = prepare_decision(intersection_id, handler)
+        if req["empty"]:
+            return finalize_decision(step, req, None, 0.0, None, None)
+        error = None
+        token_usage = None
+        start_time = time.time()
+        try:
+            llm_output = llm.inference(req["prompt"])
+        except Exception as exc:
+            llm_output = None
+            error = repr(exc)
+        latency_ms = (time.time() - start_time) * 1000
+        if error is None:
+            token_usage = getattr(llm, "last_usage", None)
+            capture_example_formatted_prompt()
+        return finalize_decision(step, req, llm_output, latency_ms,
+                                 token_usage, error)
+
+    def infer_single(prompt):
+        """Run one prompt through the model, timed, isolating its own failure --
+        the sequential path's inference, reused as the per-prompt fallback."""
+        start_time = time.time()
+        try:
+            output = llm.inference(prompt)
+            usage = getattr(llm, "last_usage", None)
+            error = None
+            capture_example_formatted_prompt()
+        except Exception as exc:
+            output, usage, error = None, None, repr(exc)
+        latency_ms = (time.time() - start_time) * 1000
+        return {"output": output, "usage": usage, "latency_ms": latency_ms,
+                "error": error}
+
+    def infer_chunk(prompts):
+        """Run one chunk as a single batched call. On ANY batch-level failure
+        (OOM, or a backend returning the wrong number of outputs/usages) fall
+        back to running the chunk one prompt at a time, so only genuinely
+        failing intersections error out -- matching the sequential path's
+        per-intersection isolation instead of failing the whole cohort.
+        Returns one result dict per prompt, in order.
+        """
+        start_time = time.time()
+        try:
+            outputs = llm.inference_batch(prompts)
+            usages = getattr(llm, "last_usage_batch", None) or [None] * len(prompts)
+            if len(outputs) != len(prompts) or len(usages) != len(prompts):
+                raise ValueError(
+                    f"inference_batch returned {len(outputs)} outputs / "
+                    f"{len(usages)} usages for {len(prompts)} prompts")
+            latency_ms = (time.time() - start_time) * 1000
+            capture_example_formatted_prompt()
+            return [{"output": o, "usage": u, "latency_ms": latency_ms,
+                     "error": None} for o, u in zip(outputs, usages)]
+        except Exception as exc:
+            print(f"[Warning] Batched inference failed ({exc!r}); falling back "
+                  f"to per-prompt for {len(prompts)} intersection(s).")
+            return [infer_single(p) for p in prompts]
+
+    def decide_batch(step, pending):
+        """Batched driver: every intersection switching this step. The non-empty
+        prompts run as batched inference (chunked by --max_batch_size); empty
+        intersections never reach the model. Returns {intersection_id: phase}.
+
+        Each queried decision records its chunk's shared wall-clock as
+        inference_latency_ms (the calls ran together), flagged via run_meta.
+        """
+        reqs = [prepare_decision(iid, handler) for iid, handler in pending]
+        query_reqs = [r for r in reqs if not r["empty"]]
+
+        results = []
+        for chunk in _chunk(query_reqs, getattr(args, "max_batch_size", 0)):
+            if chunk:
+                results.extend(infer_chunk([r["prompt"] for r in chunk]))
+
+        next_phases = {}
+        query_idx = 0
+        for req in reqs:
+            if req["empty"]:
+                next_phase = finalize_decision(step, req, None, 0.0, None, None)
+            else:
+                res = results[query_idx]
+                query_idx += 1
+                next_phase = finalize_decision(
+                    step, req, res["output"], res["latency_ms"], res["usage"],
+                    res["error"])
+            next_phases[req["intersection_id"]] = next_phase
+        return next_phases
+
+    if getattr(args, "sequential", False):
+        run_control_loop(ctx, args.simulation_steps, decide)
+    else:
+        run_control_loop_batched(ctx, args.simulation_steps, decide_batch)
 
 
 if __name__ == "__main__":
