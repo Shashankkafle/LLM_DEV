@@ -120,6 +120,30 @@ class MetricsRecorder:
             "average_waiting_time_s": round(total_waiting / count, 2),
         }
 
+    def _track_loaded_ids(self):
+        """Fold this step's newly built vehicles into the cumulative set.
+
+        Synthetic blockage obstacles are filtered out here for the same reason
+        they are filtered everywhere else in this class: they are
+        infrastructure, not demand.
+        """
+        self.loaded_ids.update(
+            v for v in traci.simulation.getLoadedIDList()
+            if not v.startswith(OBSTACLE_VEHICLE_PREFIX)
+        )
+
+    def record_initial_load(self):
+        """Capture the vehicles SUMO builds while loading the route file, i.e.
+        before the first simulation step. Call once, after traci.start().
+
+        getLoadedIDList() only reports vehicles built since the previous TraCI
+        step, so this first batch is already gone by the time the loop's first
+        record_step_summary() runs -- 10 vehicles (ids 0-9) on hangzhou_real.
+        Missing them made completion_rate's denominator too small, which let it
+        exceed 1.0 on runs where nearly everything arrived.
+        """
+        self._track_loaded_ids()
+
     def record_step_summary(self, step):
         current_time = traci.simulation.getTime()
         step_length = traci.simulation.getDeltaT()
@@ -134,10 +158,7 @@ class MetricsRecorder:
         # a blockage emits no arrival, so an unfiltered obstacle would sit in
         # still_running forever and pollute the CityFlow-style averages and
         # completion_rate of the blockage arm only.
-        self.loaded_ids.update(
-            v for v in traci.simulation.getLoadedIDList()
-            if not v.startswith(OBSTACLE_VEHICLE_PREFIX)
-        )
+        self._track_loaded_ids()
         for vehicle in traci.simulation.getDepartedIDList():
             if vehicle.startswith(OBSTACLE_VEHICLE_PREFIX):
                 continue
@@ -294,8 +315,11 @@ class MetricsRecorder:
             if self.queue_lengths else None
         )
 
-        # Episode-level vehicle accounting.
-        total_loaded = len(self.loaded_ids)
+        # Episode-level vehicle accounting. A vehicle cannot depart without
+        # having been loaded, so the union is a backstop for a launcher that
+        # forgot record_initial_load(): without it, completion_rate can print
+        # above 1.0.
+        total_loaded = len(self.loaded_ids | self.departed_ids)
         total_departed = len(self.departed_ids)
         total_arrived = len(self.arrived_ids)
         summary["total_loaded_vehicles"] = total_loaded

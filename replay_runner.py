@@ -311,6 +311,7 @@ def main():
                                run_info=run_info)
 
     traci.start(sumo_cmd)
+    recorder.record_initial_load()
     warn_on_sumo_version_mismatch(original_sumo_version)
     add_sumo_runtime(manifest, sumo_cmd)
     save_manifest(run_dir, manifest)

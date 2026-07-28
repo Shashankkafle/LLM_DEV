@@ -56,6 +56,7 @@ def main():
         recorder = MetricsRecorder(run_dir=run_dir, verbose=False,
                                    blockage_manager=manager)
         env.start_simulation()
+        recorder.record_initial_load()
 
         state_during = None
         for step in range(1, 1001):

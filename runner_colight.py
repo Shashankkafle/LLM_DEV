@@ -499,6 +499,7 @@ def evaluate(args, conf, records_dir, weights_dir, eval_round, features, agent_c
                                sumo_config=args.simulation_config,
                                blockage_manager=blockage_manager,
                                run_info=run_info)
+    recorder.record_initial_load()
     replay = ReplayRecorder(record_dir=records_dir, meta=run_meta)
 
     if manifest is not None:

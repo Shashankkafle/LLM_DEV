@@ -101,6 +101,7 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
                   intersection_config=conf, output_dir=records_dir, seed=seed,
                   blockage_manager=blockage_manager)
     env.start_simulation()
+    recorder.record_initial_load()
     if manifest is not None:
         add_sumo_runtime(manifest, env.cmd)
         save_manifest(records_dir, manifest)
