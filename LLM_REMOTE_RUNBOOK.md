@@ -234,3 +234,46 @@ python build_results.py --experiment llm_real_c3_approach_only
 
 Copy the `logs/llm_real_*` trees back to the analysis machine (rsync/scp) —
 they're gitignored, so they won't come back via git.
+
+---
+
+## 7. The C2 grid — one trigger
+
+C2 blocks the West through lane into `intersection_2_2` (`road_1_2_0_1`, 10 m
+upstream, steps 500–1700), so the incident is reported at `intersection_2_2`
+(approach) and `intersection_1_2` (downstream exit). Two arms × seeds 1–3, plus
+the clean baseline the C2 delta is measured against:
+
+| Experiment            | Blockage | Who hears the incident? | Runs |
+|-----------------------|----------|-------------------------|------|
+| `llm_real_normal`     | none     | —                       | s1 s2 s3 |
+| `llm_real_c2_text`    | C2       | both intersections (`2_2` approach + `1_2` exit) | s1 s2 s3 |
+| `llm_real_c2_notext`  | C2       | neither (`--hide_blockage_info`) | s1 s2 s3 |
+
+```bash
+python run_llm_c2.py                      # all three arms, seeds 1-3
+python run_llm_c2.py --dry_run            # print the plan, run nothing
+python run_llm_c2.py --seeds 1            # seed 1 first, verify, then rerun
+python run_llm_c2.py --arms text notext   # skip the clean baseline
+```
+
+Arms run one after the other (never concurrently — one 14B on one GPU) and each
+lands in its own `logs/<experiment>/`. The clean phase costs nothing if
+`llm_real_normal` seeds 1–3 already ran on this box: the matrix skips a
+completed identity. Re-running after a crash resumes.
+
+Wrap it: `tmux new -s c2 'python run_llm_c2.py 2>&1 | tee c2_grid.log'`.
+
+Aggregate over **all** of `logs/` — the C2 arms live in different groups from
+their clean baseline, so a per-experiment scope can't compute the ATT delta:
+
+```bash
+python build_results.py
+```
+
+> **Prompt audit.** `audit_prompts.py` hard-codes the C3 goldens
+> (`intersection_2_3` / `intersection_2_4`, the "563 m … 573 m link" claim), so
+> it does **not** audit these C2 runs. The §5b inline snippet still works —
+> point it at `logs/llm_real_c2_text/*seed1_*` and assert
+> `iids <= {"intersection_2_2", "intersection_1_2"}` with the same 500–1700
+> window.

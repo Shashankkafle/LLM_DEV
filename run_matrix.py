@@ -181,6 +181,8 @@ def parse_args():
     parser.add_argument("--configs", type=str, nargs="+", help="Override configs")
     parser.add_argument("--blockages", type=str, nargs="+", help="Override blockage arms")
     parser.add_argument("--steps", type=int, help="Override simulation steps (ad-hoc/smoke runs)")
+    parser.add_argument("--num_rounds", type=int,
+                        help="Override training rounds (CoLight); part of run identity")
     parser.add_argument("--force", action="store_true",
                         help="Re-run every combo even if a completed run exists")
     parser.add_argument("--dry_run", action="store_true",
@@ -193,7 +195,7 @@ def overrides_from(args):
     return {k: v for k, v in (
         ("seeds", args.seeds), ("controllers", args.controllers),
         ("configs", args.configs), ("blockages", args.blockages),
-        ("steps", args.steps)) if v}
+        ("steps", args.steps), ("num_rounds", args.num_rounds)) if v}
 
 
 def main(args):

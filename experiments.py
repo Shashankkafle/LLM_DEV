@@ -109,6 +109,33 @@ EXPERIMENTS = {
         "steps": 3600,
         "intersection_config": "three_lane",
     },
+    # Blockage-campaign baselines: FixedTime + MaxPressure on the real
+    # (stochastic) routes, clean vs one blockage arm, 5 seeds.
+    # run_blockage_campaign.py runs these, then drops the CoLight evals into the
+    # SAME logs/<arm>_campaign/ group so one build_results call tabulates all
+    # three controllers together. The two arms are separate experiments (not one
+    # sweep over ["none","c2","c3"]) so each campaign is its own self-contained
+    # group with its own clean baseline.
+    "c2_campaign": {
+        "controllers": ["fixedtime", "maxpressure"],
+        "configs": ["hzreal"],
+        "seeds": [1, 2, 3, 4, 5],
+        "blockages": ["none", "c2"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+    },
+    # C3 at the same 5 seeds as C2. Seeds 1-3 of the FixedTime arms already
+    # exist in ft_real_normal_c3 and the CoLight evals in colight_c3_eval; both
+    # are reused by identity, so this adds seeds 4-5 plus the MaxPressure arm
+    # that C3 never had.
+    "c3_campaign": {
+        "controllers": ["fixedtime", "maxpressure"],
+        "configs": ["hzreal"],
+        "seeds": [1, 2, 3, 4, 5],
+        "blockages": ["none", "c3"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+    },
     # CoLight + Advanced-CoLight trained on the same real routes, so their
     # clean-network numbers compare directly against ft_real_normal_c3.
     "colight_train_real": {
@@ -177,6 +204,33 @@ EXPERIMENTS = {
         "intersection_config": "three_lane",
         "extra": {"llm_path": LLM_MODEL_PATH, "blockage_info_scope": "approach"},
     },
+    # --- LLM on the C2 incident: the +text / -text pair ----------------------
+    # Same treatment as the C3 arms above, moved to C2. C2 blocks the West
+    # through lane into intersection_2_2 (road_1_2_0_1), so the incident is
+    # reported at intersection_2_2 (approach) and intersection_1_2 (downstream
+    # exit) -- the reporting pair follows the scenario's lane, nothing here or
+    # in the runner names an intersection. Clean baseline for the C2 delta is
+    # llm_real_normal (same controller, config, steps and seeds).
+    "llm_real_c2_text": {
+        "controllers": ["llm"],
+        "configs": ["hzreal"],
+        "seeds": [1, 2, 3],
+        "blockages": ["c2"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+        "extra": {"llm_path": LLM_MODEL_PATH},
+    },
+    # C2 injected physically but kept OUT of the prompt (does the LLM use the
+    # incident text, or only react to the queue numbers?).
+    "llm_real_c2_notext": {
+        "controllers": ["llm"],
+        "configs": ["hzreal"],
+        "seeds": [1, 2, 3],
+        "blockages": ["c2"],
+        "steps": 3600,
+        "intersection_config": "three_lane",
+        "extra": {"llm_path": LLM_MODEL_PATH, "hide_blockage_info": True},
+    },
     # Clean-network benchmark suite (supersedes run_report_suite.py). CoLight
     "report_suite": {
         "controllers": ["fixedtime", "maxpressure", "colight", "advanced_colight"],
@@ -220,8 +274,8 @@ def make_combo(controller, config_alias, seed, blockage_alias, steps,
 
 def expand_experiment(name, overrides=None):
     """Expand an experiment into its list of combos. overrides may replace
-    'controllers', 'configs', 'seeds', or 'blockages' (for ad-hoc seed tweaks
-    without editing the preset)."""
+    'controllers', 'configs', 'seeds', 'blockages', 'steps' or 'num_rounds'
+    (for ad-hoc tweaks without editing the preset)."""
     if name not in EXPERIMENTS:
         raise KeyError(f"Unknown experiment '{name}'. "
                        f"Known: {sorted(EXPERIMENTS)}")
@@ -233,7 +287,11 @@ def expand_experiment(name, overrides=None):
     blockages = overrides.get("blockages") or exp["blockages"]
     steps = overrides.get("steps") or exp.get("steps", 3600)
     iconf = exp.get("intersection_config", "three_lane")
-    extra = exp.get("extra", {})
+    extra = dict(exp.get("extra", {}))
+    # num_rounds IS part of run identity, so a shortened training is a distinct
+    # result -- it never silently pools with the 100-round runs.
+    if overrides.get("num_rounds"):
+        extra["num_rounds"] = overrides["num_rounds"]
 
     _check_aliases(controllers, configs, blockages)
     combos = []

@@ -21,6 +21,7 @@ import json
 import os
 import re
 import statistics
+import sys
 from pathlib import Path
 
 from configurations import LOGS_DIR_NAME, RUN_MANIFEST_FILENAME
@@ -97,8 +98,13 @@ def row_for_run(run_dir, logs_root):
         "steps": env.get("simulation_steps", ""),
         "seed": env.get("seed"),
         "blockage": blk.get("scenario_name", "none") if blk else "none",
-        "hide_info": blk.get("hide_blockage_info", False) if blk else False,
-        "info_scope": blk.get("blockage_info_scope", "") if blk else "",
+        # Normalise, don't just default: a blockage manifest carries these keys
+        # with an explicit null, so .get(key, default) returns None while a
+        # clean run (no blockage block at all) returns the default. Left
+        # unnormalised, None != "" splits an arm from its own clean baseline
+        # into two families and no delta is ever computed.
+        "hide_info": bool(blk.get("hide_blockage_info")) if blk else False,
+        "info_scope": (blk.get("blockage_info_scope") or "") if blk else "",
         "num_rounds": (manifest.get("args") or {}).get("num_rounds", ""),
         "sumo_version": (manifest.get("sumo") or {}).get("version", ""),
         "date": manifest.get("started_at", ""),
@@ -261,6 +267,12 @@ def parse_args():
 
 
 def main(args):
+    # Windows consoles default to cp1252, which cannot encode the summary's
+    # delta symbol -- without this the whole aggregation dies on the first
+    # blockage arm that actually has a delta to report.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     logs_dir = Path(args.logs_dir)
     scope_dir = logs_dir / args.experiment if args.experiment else logs_dir
     scope = args.experiment or "all"
