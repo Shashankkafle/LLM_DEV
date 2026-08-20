@@ -67,9 +67,9 @@ Qwen2.5-14B, or re-export the merge with the tokenizer included.
 > may parse poorly. Watch `valid_resp_rate` in the seed-1 smoke (§5a); the
 > manifest records the exact formatted prompt for inspection.
 
-> Note: the model is **not** part of run identity. Don't run a different model
-> over these same config/seed/blockage combos in this `logs/` tree — the matrix
-> would treat them as the same result.
+> Note: the model **is** part of run identity (`experiments._identity_fields`),
+> so two models over the same config/seed/blockage combos are distinct results
+> and share a `logs/` tree safely.
 
 ## 4. GPU + LLM smoke (before committing to full runs)
 
@@ -135,6 +135,94 @@ through) or call `runner.py --sequential` directly. Greedy decoding
 If a wide batch OOMs, cap it with `"max_batch_size": 8` in `extra` (or
 `--max_batch_size 8`); the runner also auto-falls-back to per-prompt on any batch
 failure, so an OOM degrades instead of crashing the step.
+
+## 4c. Alternative: run an arm on a hosted model (OpenRouter)
+
+No GPU box required. Give `--llm_path` an `openrouter:<provider>/<model>` value
+and `runner.build_llm` swaps the local HuggingFace backend for
+`models_inference/LLM/openrouter_llm.py`, which talks to OpenRouter's
+OpenAI-compatible API over stdlib urllib (no extra dependency, nothing to
+`uv sync`). Everything downstream — prompts, parsing, batching, the decision
+records — is unchanged.
+
+```bash
+set +o history                 # keep the key out of ~/.bash_history
+export OPENROUTER_API_KEY=sk-or-...
+set -o history
+python runner.py --test_name openrouter_smoke --simulation_steps 300 \
+    --llm_path openrouter:google/gemma-3-27b-it
+```
+
+Better for repeat use, put it in a gitignored `.env` (`.env` and `.env.*` are in
+`.gitignore`) and source it, so the key is never typed into a shell or a script:
+
+```bash
+echo 'OPENROUTER_API_KEY=sk-or-...' > .env && chmod 600 .env
+set -a; . ./.env; set +a
+```
+
+The key is read **only** from the environment — there is no CLI flag for it, so it
+cannot land in `run_manifest.json`'s `argv`/`args`, and `describe()` never
+includes it (pinned by a check in `tests/smoke_openrouter_backend.py`). Never
+paste it into `experiments.py` or a run script.
+
+For a full arm, put the same string in the experiment's `extra`:
+`{"llm_path": "openrouter:google/gemma-3-27b-it"}`. No `run_matrix.py` change is
+needed, and because the model is part of run identity these results never pool
+with the local 14B's.
+
+### Testing several models, one after another
+
+`--llm_paths` makes the model a sweep dimension like seeds and blockages. The
+matrix runs them sequentially, one run per model:
+
+```bash
+python run_matrix.py --experiment llm_real_normal --seeds 1 --steps 300 \
+    --llm_paths openrouter:google/gemma-3-27b-it \
+                openrouter:google/gemma-3-12b-it \
+                ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b
+```
+
+Local paths and hosted models can be mixed freely. Because the model is part of
+run identity:
+
+* re-running the same list **skips** what is already done — adding a model to the
+  list only spends on the new one;
+* `build_results.py` reports **one row per model** (a `model` column in both
+  sheets) instead of averaging different models into a single "llm" result;
+* a blockage arm's ΔATT is measured against **that same model's** clean run.
+
+Run dirs carry the model tag: `llm_hzreal_c3_seed1_gemma-3-27b-it_<timestamp>`.
+
+Always `--dry_run` a multi-model sweep first — the combo count is
+models × seeds × blockages, and every combo costs credit. A failing model (bad
+id, exhausted quota) is tallied as `failed` and the sweep continues to the next.
+
+`initialize_llm()` sends a 1-token preflight so a bad key, an unknown model, or a
+dead network **crashes before SUMO starts** — the runner treats an inference
+failure as "hold the current phase", so a persistent fault would otherwise burn a
+whole run producing silently degraded control. The manifest's `llm` block records
+`resolved_model` / `resolved_provider` (OpenRouter routes across providers, so a
+hosted run is not reproducible the way a local one is) and never the API key.
+
+Batching here is one concurrent request per intersection rather than one padded
+`generate()`, so the §4b equivalence question does not arise — each prompt is an
+independent call. `--max_batch_size` doubles as the concurrency cap; lower it if
+you hit rate limits. `OPENROUTER_BASE_URL` overrides the endpoint.
+
+Offline check of the whole backend (fake server, no key, no credit):
+
+```bash
+python tests/smoke_openrouter_backend.py
+```
+
+**Cost.** A 3600-step hzreal run queries the LLM ~1,630 times at ~759 input
+tokens each (≈1.24 M input tokens). On `google/gemma-3-27b-it` that is roughly
+**$0.30–0.55 per run** (~$10 for the whole 6-arm × 3-seed grid); `gemma-3-12b-it`
+is about a third of that. Completion length dominates the spread. Avoid
+`gemma-2-27b-it` — 8× the price of `gemma-3-27b-it`. The `:free` variants cost
+nothing but are rate-limited, which collides with the concurrent batch: fine for
+a smoke run, risky for a full arm. Shake out with `--simulation_steps 300` first.
 
 ## 5. Run in order — seed 1 first, verify, then the rest
 

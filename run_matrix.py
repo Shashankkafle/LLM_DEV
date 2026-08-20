@@ -5,6 +5,11 @@
     python run_matrix.py --list
     python run_matrix.py --experiment mp_blockage_sweep --dry_run
 
+    # test several models on one arm, one after another
+    python run_matrix.py --experiment llm_real_normal --seeds 1 --steps 300 \
+        --llm_paths openrouter:google/gemma-3-27b-it \
+                    openrouter:google/gemma-3-12b-it
+
 Each combo becomes one run under logs/<experiment>/. Runs are sequential (one
 SUMO at a time). For every combo the matrix decides:
 
@@ -183,6 +188,11 @@ def parse_args():
     parser.add_argument("--steps", type=int, help="Override simulation steps (ad-hoc/smoke runs)")
     parser.add_argument("--num_rounds", type=int,
                         help="Override training rounds (CoLight); part of run identity")
+    parser.add_argument("--llm_paths", type=str, nargs="+",
+                        help="Sweep the LLM arm over these models, one run each, "
+                             "in order. Local model dirs and/or "
+                             "'openrouter:<provider>/<model>'. Part of run "
+                             "identity, so models never pool with each other.")
     parser.add_argument("--force", action="store_true",
                         help="Re-run every combo even if a completed run exists")
     parser.add_argument("--dry_run", action="store_true",
@@ -195,7 +205,8 @@ def overrides_from(args):
     return {k: v for k, v in (
         ("seeds", args.seeds), ("controllers", args.controllers),
         ("configs", args.configs), ("blockages", args.blockages),
-        ("steps", args.steps), ("num_rounds", args.num_rounds)) if v}
+        ("steps", args.steps), ("num_rounds", args.num_rounds),
+        ("llm_paths", args.llm_paths)) if v}
 
 
 def main(args):

@@ -16,8 +16,12 @@ Two ideas keep the run data manageable:
     skip or reuse instead of re-running.
 """
 import json
+import re
 from itertools import product
 from pathlib import Path
+
+from configurations import LLM_DEFAULT_PATH
+from models_inference.LLM.openrouter_llm import OPENROUTER_PREFIX
 
 # --- aliases -----------------------------------------------------------------
 
@@ -62,10 +66,12 @@ SHORT_TOKENS = {
 # Qwen2.5-14B living outside the repo on the GPU box. runner.py's --llm_path
 # takes this directory directly (a merged model dir, not an HF cache folder, so
 # there is no snapshots/<hash>/ to descend into); open_llm expands the leading
-# ~ at load time. fp16 (~28 GB) fits the A40. NOTE: the model is NOT part of a
-# run's identity (see _identity_fields), so never run two different models over
-# the same config/seed/blockage combos in one logs tree -- the matrix would
-# treat them as the same result. Every experiment below uses this one model.
+# ~ at load time. fp16 (~28 GB) fits the A40.
+#
+# The model IS part of a run's identity (see _identity_fields), so two models
+# over the same config/seed/blockage combos are distinct results and share a
+# logs tree safely. An "openrouter:<provider>/<model>" value here runs the arm
+# against a hosted model instead (see runner.build_llm).
 LLM_MODEL_PATH = "~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b"
 
 EXPERIMENTS = {
@@ -274,8 +280,8 @@ def make_combo(controller, config_alias, seed, blockage_alias, steps,
 
 def expand_experiment(name, overrides=None):
     """Expand an experiment into its list of combos. overrides may replace
-    'controllers', 'configs', 'seeds', 'blockages', 'steps' or 'num_rounds'
-    (for ad-hoc tweaks without editing the preset)."""
+    'controllers', 'configs', 'seeds', 'blockages', 'steps', 'num_rounds' or
+    'llm_paths' (for ad-hoc tweaks without editing the preset)."""
     if name not in EXPERIMENTS:
         raise KeyError(f"Unknown experiment '{name}'. "
                        f"Known: {sorted(EXPERIMENTS)}")
@@ -293,12 +299,25 @@ def expand_experiment(name, overrides=None):
     if overrides.get("num_rounds"):
         extra["num_rounds"] = overrides["num_rounds"]
 
+    # The model is a sweep dimension for LLM runs, like seeds and blockages: it
+    # is part of run identity, so each model is a distinct result that the
+    # matrix runs (and can skip/reuse) on its own.
+    llm_paths = overrides.get("llm_paths")
+    if llm_paths and "llm" not in controllers:
+        raise ValueError(
+            f"llm_paths was given but experiment '{name}' runs {controllers}; "
+            "only the 'llm' controller takes a model.")
+
     _check_aliases(controllers, configs, blockages)
     combos = []
     for controller, config_alias, seed, blk in product(
             controllers, configs, seeds, blockages):
-        combos.append(make_combo(controller, config_alias, seed, blk,
-                                 steps, iconf, extra))
+        for llm_path in (llm_paths or [None]) if controller == "llm" else [None]:
+            combo_extra = dict(extra)
+            if llm_path:
+                combo_extra["llm_path"] = llm_path
+            combos.append(make_combo(controller, config_alias, seed, blk,
+                                     steps, iconf, combo_extra))
     return combos
 
 
@@ -310,18 +329,35 @@ def _check_aliases(controllers, configs, blockages):
         raise KeyError(f"Unknown alias(es): {unknown}")
 
 
+def model_token(llm_path):
+    """Short, filesystem-safe tag for a model, for run-dir names and report
+    columns: 'openrouter:google/gemma-3-27b-it' -> 'gemma-3-27b-it',
+    '~/ft_models/merged/qwen2.5_14b' -> 'qwen2.5_14b'."""
+    name = llm_path or ""
+    if name.startswith(OPENROUTER_PREFIX):
+        name = name[len(OPENROUTER_PREFIX):]
+    tail = re.split(r"[\\/]", name.rstrip("\\/"))[-1]
+    return re.sub(r"[^A-Za-z0-9._-]", "_", tail)
+
+
 def combo_slug(combo):
     """Human-friendly run-dir name, e.g. mp_hz1_c2_seed1. Not load-bearing --
-    build_results reads identity from the manifest, not this."""
+    build_results reads identity from the manifest, not this. LLM runs carry a
+    model tag so a multi-model sweep is readable on disk."""
     token = SHORT_TOKENS.get(combo["controller"], combo["controller"])
     seed = "dflt" if combo["seed"] is None else combo["seed"]
-    return f"{token}_{combo['config_alias']}_{combo['blockage_alias']}_seed{seed}"
+    slug = f"{token}_{combo['config_alias']}_{combo['blockage_alias']}_seed{seed}"
+    llm_path = _combo_llm_path(combo)
+    return f"{slug}_{model_token(llm_path)}" if llm_path else slug
 
 
 # --- identity: what makes two runs the same result ---------------------------
 
 def _identity_fields(controller, simulation_config, intersection_config, steps,
-                     seed, blockage_name, hide_info, info_scope, num_rounds):
+                     seed, blockage_name, hide_info, info_scope, num_rounds,
+                     llm_path=None):
+    # llm_path is appended, never inserted: config_key() drops the seed by
+    # position (index 4), so the leading fields must keep their offsets.
     return (
         controller,
         Path(simulation_config).name if simulation_config else None,
@@ -332,7 +368,17 @@ def _identity_fields(controller, simulation_config, intersection_config, steps,
         bool(hide_info),
         info_scope or "both",
         num_rounds,
+        llm_path,
     )
+
+
+def _combo_llm_path(combo):
+    """The model an LLM combo will actually run on. Falls back to runner.py's
+    --llm_path default so a combo that leaves it unset still matches the
+    manifest of its own completed run (which records the resolved default)."""
+    if combo["controller"] != "llm":
+        return None
+    return combo["extra"].get("llm_path") or LLM_DEFAULT_PATH
 
 
 def identity_from_combo(combo):
@@ -341,7 +387,8 @@ def identity_from_combo(combo):
         combo["controller"], combo["simulation_config"],
         combo["intersection_config"], combo["steps"], combo["seed"],
         combo["blockage_name"], extra.get("hide_blockage_info", False),
-        extra.get("blockage_info_scope", "both"), extra.get("num_rounds"))
+        extra.get("blockage_info_scope", "both"), extra.get("num_rounds"),
+        _combo_llm_path(combo))
 
 
 def identity_from_manifest(m):
@@ -353,7 +400,8 @@ def identity_from_manifest(m):
         env.get("intersection_config"), env.get("simulation_steps"),
         env.get("seed"), blk.get("scenario_name", "none"),
         blk.get("hide_blockage_info", False),
-        blk.get("blockage_info_scope", "both"), args.get("num_rounds"))
+        blk.get("blockage_info_scope", "both"), args.get("num_rounds"),
+        args.get("llm_path"))
 
 
 def identity_key(identity):

@@ -18,3 +18,7 @@ Thumbs.db
 models/LLMs
 logs/
 .ipynb_checkpoints
+# API keys (OPENROUTER_API_KEY etc) -- keep secrets out of the repo entirely
+.env
+.env.*
+*.secrets

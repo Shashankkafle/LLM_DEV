@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 from configurations import LOGS_DIR_NAME, RUN_MANIFEST_FILENAME
-from experiments import identity_from_manifest, identity_key
+from experiments import identity_from_manifest, identity_key, model_token
 
 OUT_DIR = "report_sheet"
 FINAL_SUMMARY = "final_summary.json"
@@ -106,6 +106,10 @@ def row_for_run(run_dir, logs_root):
         "hide_info": bool(blk.get("hide_blockage_info")) if blk else False,
         "info_scope": (blk.get("blockage_info_scope") or "") if blk else "",
         "num_rounds": (manifest.get("args") or {}).get("num_rounds", ""),
+        # Which model produced the decisions. Part of the config key, so a
+        # multi-model sweep reports one row per model instead of averaging
+        # different models into a single "llm" result.
+        "model": model_token((manifest.get("args") or {}).get("llm_path")),
         "sumo_version": (manifest.get("sumo") or {}).get("version", ""),
         "date": manifest.get("started_at", ""),
         "identity": identity_key(identity_from_manifest(manifest)),
@@ -126,14 +130,15 @@ def collect_rows(scan_dir, logs_root):
 
 def _config_key(row):
     """Identity minus seed -- groups replicate seeds of one config."""
-    return (row["controller"], row["dataset"], row["routes"],
+    return (row["controller"], row["model"], row["dataset"], row["routes"],
             row["intersection_config"], row["steps"], row["blockage"],
             row["hide_info"], row["info_scope"], row["num_rounds"])
 
 
 def _family_key(row):
-    """Config minus the blockage -- links a blockage arm to its clean baseline."""
-    return (row["controller"], row["dataset"], row["routes"],
+    """Config minus the blockage -- links a blockage arm to its clean baseline.
+    Keeps the model, so an arm's delta is measured against ITS OWN clean run."""
+    return (row["controller"], row["model"], row["dataset"], row["routes"],
             row["intersection_config"], row["steps"], row["hide_info"],
             row["info_scope"], row["num_rounds"])
 
@@ -171,8 +176,8 @@ def aggregate_configs(completed_rows):
         sample = runs[0]
         seeds = sorted({r["seed"] for r in runs}, key=lambda s: (s is None, s))
         entry = {
-            "controller": sample["controller"], "dataset": sample["dataset"],
-            "routes": sample["routes"],
+            "controller": sample["controller"], "model": sample["model"],
+            "dataset": sample["dataset"], "routes": sample["routes"],
             "intersection_config": sample["intersection_config"],
             "steps": sample["steps"], "blockage": sample["blockage"],
             "hide_info": sample["hide_info"], "info_scope": sample["info_scope"],
@@ -219,11 +224,12 @@ def write_csv(path, columns, rows):
 
 
 RUN_COLUMNS = (["run_dir", "experiment", "status", "reused_from", "controller",
-                "dataset", "routes", "intersection_config", "green_s", "steps",
-                "seed", "blockage", "hide_info", "info_scope", "num_rounds",
-                "sumo_version", "date"] + [c for c, _ in METRICS])
+                "model", "dataset", "routes", "intersection_config", "green_s",
+                "steps", "seed", "blockage", "hide_info", "info_scope",
+                "num_rounds", "sumo_version", "date"] + [c for c, _ in METRICS])
 
-CONFIG_COLUMNS = (["controller", "dataset", "routes", "intersection_config",
+CONFIG_COLUMNS = (["controller", "model", "dataset", "routes",
+                   "intersection_config",
                    "steps", "blockage", "hide_info", "info_scope", "num_rounds",
                    "n_seeds", "seeds"]
                   + [f"{m}_{stat}" for m in AGG_METRICS for stat in ("mean", "std")]
@@ -242,7 +248,8 @@ def print_summary(configs):
     for family in sorted({c["_family"] for c in configs}, key=sort_key):
         arms = [c for c in configs if c["_family"] == family]
         head = arms[0]
-        print(f"\n{head['controller']}  {head['dataset']}/{head['routes']}  "
+        label = head["controller"] + (f" [{head['model']}]" if head["model"] else "")
+        print(f"\n{label}  {head['dataset']}/{head['routes']}  "
               f"({head['intersection_config']}, {head['steps']} steps)")
         for c in sorted(arms, key=lambda x: (x["blockage"] != "none", x["blockage"])):
             line = (f"  {c['blockage']:26s} n={c['n_seeds']}  "

@@ -10,6 +10,7 @@ import re
 import time
 
 from models_inference.LLM.open_llm import LLM_Inference
+from models_inference.LLM.openrouter_llm import OpenRouter_Inference, OPENROUTER_PREFIX
 from runner_common import (
     setup_run, run_control_loop, run_control_loop_batched, build_blockage_manager,
 )
@@ -33,7 +34,11 @@ def parse_args():
                              "run_matrix.py to group a sweep's runs).")
     parser.add_argument("--simulation_steps", type=int, default=DEFAULT_SIMULATION_STEPS)
     parser.add_argument("--simulation_config", type=str, default=DEFAULT_SIMULATION_CONFIG)
-    parser.add_argument("--llm_path", type=str, default=LLM_DEFAULT_PATH)
+    parser.add_argument("--llm_path", type=str, default=LLM_DEFAULT_PATH,
+                        help="Local model directory, or "
+                             "'openrouter:<provider>/<model>' to run the "
+                             "decisions against an OpenRouter-hosted model "
+                             "(needs OPENROUTER_API_KEY).")
     parser.add_argument("--use_gui", action="store_true")
     parser.add_argument("--seed", type=int, default=None,
                         help="SUMO random seed. Default keeps SUMO's fixed "
@@ -75,6 +80,15 @@ def parse_args():
              "Lower it if a wide batch pressures GPU memory; results are "
              "unaffected (each sequence is decoded independently).")
     return parser.parse_args()
+
+
+def build_llm(llm_path):
+    """Local HuggingFace model by default; an 'openrouter:<model>' path routes
+    the decisions to the hosted API instead. Both satisfy the same interface,
+    so nothing downstream of here knows which backend it is talking to."""
+    if llm_path.startswith(OPENROUTER_PREFIX):
+        return OpenRouter_Inference(llm_path)
+    return LLM_Inference(llm_path=llm_path)
 
 
 def _chunk(items, size):
@@ -134,7 +148,7 @@ def state_is_empty(state_dict):
 def main(args):
     conf = INTERSECTION_CONFIGS[args.intersection_config]
 
-    llm = LLM_Inference(llm_path=args.llm_path)
+    llm = build_llm(args.llm_path)
     llm.initialize_llm()
 
     _, blockage_manager = build_blockage_manager(args.blockage_scenario)
