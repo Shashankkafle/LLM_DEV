@@ -140,10 +140,17 @@ def _extract_reasoning(body):
 
 
 class OpenRouter_Inference:
-    def __init__(self, llm_path, max_new_tokens=None, timeout_s=None):
+    def __init__(self, llm_path, max_new_tokens=None, timeout_s=None,
+                 reasoning_max_tokens=None):
         self.llm_path_arg = llm_path
         self.model = _model_from_path(llm_path)
         self.max_new_tokens = max_new_tokens or LLM_MAX_NEW_TOKENS
+        # Bounds the thinking specifically, leaving the rest of max_tokens for
+        # the answer. A thinking model's cost is bimodal -- a typical decision
+        # is cheap, a few run away and eat the whole budget -- so capping the
+        # total trades those runaways for truncation, while capping the
+        # reasoning cuts them off with room left to answer.
+        self.reasoning_max_tokens = reasoning_max_tokens
         # A chain-of-thought model can think for minutes on one decision; the
         # 120 s default is sized for the non-thinking arms, and a timeout is
         # retryable, so an undersized value burns MAX_ATTEMPTS generations.
@@ -199,6 +206,7 @@ class OpenRouter_Inference:
             "base_url": self.base_url,
             "generation": {
                 "max_new_tokens": self.max_new_tokens,
+                "reasoning_max_tokens": self.reasoning_max_tokens,
                 "temperature": LLM_TEMPERATURE,
             },
             "request_timeout_s": self.timeout_s,
@@ -259,12 +267,17 @@ class OpenRouter_Inference:
         self.resolved_provider = body.get("provider") or self.resolved_provider
 
     def _complete(self, messages):
-        return self._post_json({
+        payload = {
             "model": self.model,
             "messages": messages,
             "max_tokens": self.max_new_tokens,
             "temperature": LLM_TEMPERATURE,
-        })
+        }
+        # Only sent when asked for: a non-thinking model would be handed a
+        # parameter it never needs, and the non-CoT arms must stay byte-identical.
+        if self.reasoning_max_tokens:
+            payload["reasoning"] = {"max_tokens": self.reasoning_max_tokens}
+        return self._post_json(payload)
 
     def _warn_if_budget_exhausted(self, content, usage):
         """Say so, loudly, when the cap -- not the model -- ate the answer.

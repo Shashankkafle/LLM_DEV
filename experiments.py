@@ -304,7 +304,7 @@ def expand_experiment(name, overrides=None):
     # identity: a model that needs a bigger budget is a different --llm_path,
     # which identity already carries. Putting them in the key would invalidate
     # every completed run for no gain. Both are recorded in the run manifest.
-    for key in ("max_new_tokens", "request_timeout"):
+    for key in ("max_new_tokens", "request_timeout", "reasoning_max_tokens"):
         if overrides.get(key):
             extra[key] = overrides[key]
 

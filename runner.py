@@ -82,6 +82,13 @@ def parse_args():
              "larger value than the fine-tuned arms -- too low and the model "
              "returns an empty completion, which the runner can only hold on.")
     parser.add_argument(
+        "--reasoning_max_tokens", type=int, default=None,
+        help="Cap the thinking specifically, leaving the rest of "
+             "--max_new_tokens for the answer (OpenRouter backend only). Use "
+             "this instead of a huge --max_new_tokens when a model's cost is "
+             "bimodal: it cuts a runaway chain of thought off with room left "
+             "to answer, rather than paying for it and truncating anyway.")
+    parser.add_argument(
         "--request_timeout", type=int, default=None,
         help="Per-request timeout in seconds for the OpenRouter backend "
              "(default: configurations.LLM_REQUEST_TIMEOUT_S). Raise it for a "
@@ -95,16 +102,22 @@ def parse_args():
     return parser.parse_args()
 
 
-def build_llm(llm_path, max_new_tokens=None, request_timeout=None):
+def build_llm(llm_path, max_new_tokens=None, request_timeout=None,
+              reasoning_max_tokens=None):
     """Local HuggingFace model by default; an 'openrouter:<model>' path routes
     the decisions to the hosted API instead. Both satisfy the same interface,
     so nothing downstream of here knows which backend it is talking to.
 
-    request_timeout only reaches the hosted backend -- local generation has no
-    socket to time out."""
+    request_timeout and reasoning_max_tokens only reach the hosted backend:
+    local generation has no socket to time out and no separate reasoning
+    channel to bound."""
     if llm_path.startswith(OPENROUTER_PREFIX):
         return OpenRouter_Inference(llm_path, max_new_tokens=max_new_tokens,
-                                    timeout_s=request_timeout)
+                                    timeout_s=request_timeout,
+                                    reasoning_max_tokens=reasoning_max_tokens)
+    if reasoning_max_tokens:
+        print("[Warning] --reasoning_max_tokens is an OpenRouter-only setting; "
+              "the local backend ignores it.")
     return LLM_Inference(llm_path=llm_path, max_new_tokens=max_new_tokens)
 
 
@@ -166,7 +179,8 @@ def main(args):
     conf = INTERSECTION_CONFIGS[args.intersection_config]
 
     llm = build_llm(args.llm_path, max_new_tokens=args.max_new_tokens,
-                    request_timeout=args.request_timeout)
+                    request_timeout=args.request_timeout,
+                    reasoning_max_tokens=args.reasoning_max_tokens)
     llm.initialize_llm()
 
     _, blockage_manager = build_blockage_manager(args.blockage_scenario)

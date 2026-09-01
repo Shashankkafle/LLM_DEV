@@ -68,15 +68,22 @@ def percentile(sorted_values, fraction):
     return sorted_values[index]
 
 
+def is_truncated(decision):
+    return decision["metrics"].get("finish_reason") == "length"
+
+
+def is_empty(decision):
+    return not (decision["llm_output"].get("raw_text") or "").strip()
+
+
 def summarize(decisions):
+    """Split the failures by their cause, because they have different fixes.
+
+    A bigger cap only helps the truncated ones. A call that stopped on its own
+    with no answer, or answered without a usable <signal>, fails at any cap."""
     completions = sorted(d["metrics"]["completion_tokens"] for d in decisions)
     reasonings = sorted(d["metrics"].get("reasoning_tokens") or 0 for d in decisions)
-    truncated = [d for d in decisions
-                 if d["metrics"].get("finish_reason") == "length"]
-    # The failure this whole script exists to catch: budget spent thinking, so
-    # nothing was left to answer with.
-    empty_answers = [d for d in decisions
-                     if not (d["llm_output"].get("raw_text") or "").strip()]
+    truncated = [d for d in decisions if is_truncated(d)]
     unparsed = [d for d in decisions
                 if d["llm_output"].get("parsing_valid") is False]
     return {
@@ -84,35 +91,79 @@ def summarize(decisions):
         "completions": completions,
         "reasonings": reasonings,
         "truncated": len(truncated),
-        "empty_answers": len(empty_answers),
+        "empty_answers": sum(1 for d in decisions if is_empty(d)),
         "unparsed": len(unparsed),
+        # Budget exhausted mid-answer -- a bigger cap fixes exactly these.
+        "truncated_empty": sum(1 for d in truncated if is_empty(d)),
+        # Stopped voluntarily with nothing to say: not a budget problem.
+        "empty_not_truncated": sum(1 for d in decisions
+                                   if is_empty(d) and not is_truncated(d)),
+        # Produced text, but no valid <signal>: a prompt/model-fit problem.
+        "text_but_unparsed": sum(1 for d in unparsed if not is_empty(d)),
     }
+
+
+def print_histogram(completions, buckets=12):
+    """A runaway tail and a fat body look identical in a mean. They do not look
+    identical here, and they call for opposite fixes."""
+    width = max(1, -(-completions[-1] // buckets))
+    print("\noutput-token histogram:")
+    for bucket in range(buckets):
+        low, high = bucket * width, (bucket + 1) * width
+        count = sum(1 for c in completions if low <= c < high)
+        if count:
+            bar = "#" * max(1, round(40 * count / len(completions)))
+            print(f"  {low:>6}-{high:<6} {count:>4}  {bar}")
 
 
 def print_report(stats, headroom):
     completions = stats["completions"]
     calls = stats["calls"]
-    p50 = percentile(completions, 0.50)
-    p99 = percentile(completions, 0.99)
+    total_output = sum(completions)
     reasoning_mean = sum(stats["reasonings"]) / calls
 
     print(f"\nLLM calls analyzed:       {calls}")
-    print(f"output tokens  mean/p50:  {sum(completions) / calls:.0f} / {p50}")
-    print(f"output tokens  p99/max:   {p99} / {completions[-1]}")
+    print(f"output tokens  mean:      {total_output / calls:.0f}")
+    for fraction in (0.50, 0.75, 0.90, 0.95, 0.99):
+        print(f"output tokens  p{int(fraction * 100):<2}:      "
+              f"{percentile(completions, fraction)}")
+    print(f"output tokens  max:       {completions[-1]}")
     print(f"reasoning tokens mean:    {reasoning_mean:.0f} "
-          f"({100 * reasoning_mean * calls / sum(completions):.0f}% of output)")
-    print(f"truncated (length):       {stats['truncated']}")
-    print(f"empty answers:            {stats['empty_answers']}")
-    print(f"unparseable answers:      {stats['unparsed']}")
+          f"({100 * reasoning_mean * calls / total_output:.0f}% of output)")
 
-    suggested = int(p99 * headroom)
-    print(f"\nsuggested --max_new_tokens: {suggested}  (p99 x {headroom})")
+    print(f"\ntruncated (length):       {stats['truncated']}"
+          f"  -> a bigger cap fixes these")
+    print(f"  of which empty:         {stats['truncated_empty']}")
+    print(f"stopped, but no answer:   {stats['empty_not_truncated']}"
+          f"  -> NOT a budget problem")
+    print(f"answered, no <signal>:    {stats['text_but_unparsed']}"
+          f"  -> NOT a budget problem")
+    print(f"total unparseable:        {stats['unparsed']} "
+          f"({100 * stats['unparsed'] / calls:.1f}% of calls)")
 
-    if stats["truncated"] or stats["empty_answers"]:
-        print("\n[FAIL] The cap used for this probe was itself too small, so the "
-              "numbers above are censored -- the true tail is longer than "
-              "anything measured here. Re-probe with a bigger cap before "
-              "trusting the suggestion.")
+    print_histogram(completions)
+
+    p95, p99 = percentile(completions, 0.95), percentile(completions, 0.99)
+    # A body-vs-tail gap this wide means the tail is runaway reasoning, not the
+    # real cost of a decision. Sizing the cap off p99 then pays for the runaway
+    # on every call that wants it, instead of cutting it off.
+    bimodal = stats["truncated"] and p99 >= 4 * max(1, percentile(completions, 0.50))
+    if bimodal:
+        print(f"\n[!] Bimodal: p50={percentile(completions, 0.50)} but "
+              f"p99={p99}. The tail is runaway reasoning, not the true cost of "
+              f"a decision -- raising the cap mostly buys the runaways more "
+              f"room. Bound the thinking instead (--reasoning_max_tokens) and "
+              f"set the cap from p95={p95}.")
+        print(f"suggested: --reasoning_max_tokens {int(p95)} "
+              f"--max_new_tokens {int(p95 * headroom)}")
+    else:
+        print(f"\nsuggested --max_new_tokens: {int(p99 * headroom)}  "
+              f"(p99 x {headroom})")
+
+    if stats["truncated"]:
+        print("\n[FAIL] Calls hit the cap, so every percentile above is "
+              "censored at it -- the true tail is longer than anything measured "
+              "here.")
         return 1
     print("\n[OK] No call hit the cap, so the distribution above is complete.")
     return 0

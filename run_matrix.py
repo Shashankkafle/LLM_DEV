@@ -88,6 +88,8 @@ def build_command(combo, run_group, test_name):
             cmd += ["--max_new_tokens", str(extra["max_new_tokens"])]
         if extra.get("request_timeout"):
             cmd += ["--request_timeout", str(extra["request_timeout"])]
+        if extra.get("reasoning_max_tokens"):
+            cmd += ["--reasoning_max_tokens", str(extra["reasoning_max_tokens"])]
     return cmd
 
 
@@ -206,6 +208,9 @@ def parse_args():
     parser.add_argument("--request_timeout", type=int,
                         help="Override the OpenRouter per-request timeout in "
                              "seconds. Not part of run identity.")
+    parser.add_argument("--reasoning_max_tokens", type=int,
+                        help="Cap the LLM's thinking specifically (see runner.py). "
+                             "Not part of run identity.")
     parser.add_argument("--force", action="store_true",
                         help="Re-run every combo even if a completed run exists")
     parser.add_argument("--dry_run", action="store_true",
@@ -221,7 +226,8 @@ def overrides_from(args):
         ("steps", args.steps), ("num_rounds", args.num_rounds),
         ("llm_paths", args.llm_paths),
         ("max_new_tokens", args.max_new_tokens),
-        ("request_timeout", args.request_timeout)) if v}
+        ("request_timeout", args.request_timeout),
+        ("reasoning_max_tokens", args.reasoning_max_tokens)) if v}
 
 
 def main(args):
