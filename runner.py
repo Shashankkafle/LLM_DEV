@@ -102,6 +102,8 @@ def parse_args():
         help="Cap the per-step inference batch (0 = no cap, one batch per step). "
              "Lower it if a wide batch pressures GPU memory; results are "
              "unaffected (each sequence is decoded independently).")
+    parser.add_argument("--logs_dir", type=str, default=None,
+                        help="Write the run directory under this root instead of logs/.")
     return parser.parse_args()
 
 
@@ -211,7 +213,7 @@ def main(args):
     ctx = setup_run(conf, args.test_name, args.simulation_config, run_meta,
                     use_gui=args.use_gui, seed=args.seed, verbose_metrics=True,
                     blockage_manager=blockage_manager, manifest=manifest,
-                    run_group=args.run_group)
+                    run_group=args.run_group, logs_dir=args.logs_dir)
 
     def capture_example_formatted_prompt():
         """Store the first fully-templated prompt (system prompt + chat

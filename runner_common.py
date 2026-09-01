@@ -41,16 +41,20 @@ def build_blockage_manager(scenario_path):
                                      scenario_name=scenario["scenario_name"])
 
 
-def create_run_dirs(test_name, run_group=None):
+def create_run_dirs(test_name, run_group=None, logs_dir=None):
     """Create a timestamped records dir under logs/ plus its phase_sequences
     subdir. Returns (records_dir, phase_sequence_dir).
 
     run_group, when given, nests the run under logs/<run_group>/ so a sweep's
     runs sit together (run_matrix groups by experiment). The aggregator reads
     identity from run_manifest.json, so this grouping is for humans, not
-    load-bearing."""
+    load-bearing.
+
+    logs_dir replaces the default logs/ root. run_matrix watches the directory
+    it was given for the run dir to appear, so if the runner wrote somewhere
+    else the sweep would report every run as failed."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base = Path(LOGS_DIR_NAME)
+    base = Path(logs_dir or LOGS_DIR_NAME)
     if run_group:
         base = base / run_group
     records_dir = base / f"{test_name}_{timestamp}"
@@ -73,14 +77,15 @@ class RunContext:
 
 def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
               seed=None, verbose_metrics=False, blockage_manager=None,
-              manifest=None, run_group=None):
+              manifest=None, run_group=None, logs_dir=None):
     """Build the run stack every controller shares.
 
     run_meta is written to replay_meta.json (and the manifest, when given, to
     run_manifest.json) up front so a crashed run still leaves enough on disk
     to be replayed and re-scored.
     """
-    records_dir, phase_sequence_dir = create_run_dirs(test_name, run_group)
+    records_dir, phase_sequence_dir = create_run_dirs(test_name, run_group,
+                                                      logs_dir)
     if manifest is not None:
         save_manifest(records_dir, manifest)
     # Copy the scenario into the run dir so the run stays reproducible even if

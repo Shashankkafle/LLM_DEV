@@ -133,6 +133,8 @@ def parse_args():
         choices=list(INTERSECTION_CONFIGS.keys()),
         default=DEFAULT_INTERSECTION_CONFIG_NAME,
     )
+    parser.add_argument("--logs_dir", type=str, default=None,
+                        help="Write the run directory under this root instead of logs/.")
     return parser.parse_args()
 
 
@@ -155,7 +157,7 @@ def main(args):
     ctx = setup_run(conf, test_name, args.simulation_config, run_meta,
                     use_gui=args.use_gui, seed=args.seed,
                     blockage_manager=blockage_manager, manifest=manifest,
-                    run_group=args.run_group)
+                    run_group=args.run_group, logs_dir=args.logs_dir)
     controller = build_controller(args.controller, conf, list(ctx.handlers))
 
     print(f"Controller    : {args.controller}")

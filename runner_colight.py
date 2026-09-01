@@ -569,6 +569,8 @@ def parse_args():
     parser.add_argument("--use_gui", action="store_true", default=False)
     parser.add_argument("--ablate_attention", action="store_true", default=False,
                         help="Force self-only adjacency (no neighbor attention) -- ablation.")
+    parser.add_argument("--logs_dir", type=str, default=None,
+                        help="Write the run directory under this root instead of logs/.")
     return parser.parse_args()
 
 
@@ -587,7 +589,8 @@ def main(args):
 
     conf = INTERSECTION_CONFIGS[args.intersection_config]
     features, agent_conf = VARIANTS[args.variant]
-    records_dir, _ = create_run_dirs(args.test_name, args.run_group)
+    records_dir, _ = create_run_dirs(args.test_name, args.run_group,
+                                     args.logs_dir)
 
     manifest = build_manifest(args.variant, args, args.intersection_config, conf,
                               extra={"mode": args.mode})

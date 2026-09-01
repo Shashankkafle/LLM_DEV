@@ -40,11 +40,12 @@ from experiments import (
 FINAL_SUMMARY = "final_summary.json"
 
 
-def build_command(combo, run_group, test_name):
+def build_command(combo, run_group, test_name, logs_dir):
     """The subprocess argv that launches one combo through its runner."""
     spec = CONTROLLERS[combo["controller"]]
     cmd = [sys.executable, spec["script"],
            "--test_name", test_name, "--run_group", run_group,
+           "--logs_dir", str(logs_dir),
            "--simulation_config", combo["simulation_config"],
            "--simulation_steps", str(combo["steps"]),
            "--intersection_config", combo["intersection_config"]]
@@ -167,7 +168,7 @@ def launch_run(combo, logs_dir, experiment, slug):
     group_dir = Path(logs_dir) / experiment
     pattern = f"{slug}_*"
     before = set(group_dir.glob(pattern)) if group_dir.exists() else set()
-    code = subprocess.call(build_command(combo, experiment, slug))
+    code = subprocess.call(build_command(combo, experiment, slug, logs_dir))
     after = set(group_dir.glob(pattern)) if group_dir.exists() else set()
     new = sorted(after - before)
     return code, (new[-1] if new else None)
@@ -263,7 +264,8 @@ def main(args):
             tally["reuse"] += 1
         else:  # run
             if args.dry_run:
-                print(f"  run    {slug:28s} {' '.join(build_command(combo, args.experiment, slug))}")
+                print(f"  run    {slug:28s} "
+                      f"{' '.join(build_command(combo, args.experiment, slug, args.logs_dir))}")
                 tally["run"] += 1
                 continue
             print(f"  run    {slug:28s} ...", flush=True)
