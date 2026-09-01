@@ -225,7 +225,8 @@ def main(args):
                                        exit_blockages=exit_blockages)
         return req
 
-    def finalize_decision(step, req, llm_output, latency_ms, token_usage, error):
+    def finalize_decision(step, req, llm_output, latency_ms, token_usage, error,
+                          reasoning=None):
         """Classify the outcome, record the decision, return the next phase.
         Shared by both drivers. Every decision point maps to exactly one
         decision_type so "nothing to do" is never confused with "model failed".
@@ -277,7 +278,7 @@ def main(args):
             blockage_facts=req["blockage_facts"],
             exit_blockage_facts=req["exit_blockage_facts"],
             blockage_info_in_prompt=req["blockage_info_in_prompt"],
-            token_usage=token_usage, error=error,
+            token_usage=token_usage, error=error, reasoning=reasoning,
         )
         return next_phase
 
@@ -288,6 +289,7 @@ def main(args):
             return finalize_decision(step, req, None, 0.0, None, None)
         error = None
         token_usage = None
+        reasoning = None
         start_time = time.time()
         try:
             llm_output = llm.inference(req["prompt"])
@@ -297,9 +299,10 @@ def main(args):
         latency_ms = (time.time() - start_time) * 1000
         if error is None:
             token_usage = getattr(llm, "last_usage", None)
+            reasoning = getattr(llm, "last_reasoning", None)
             capture_example_formatted_prompt()
         return finalize_decision(step, req, llm_output, latency_ms,
-                                 token_usage, error)
+                                 token_usage, error, reasoning)
 
     def infer_single(prompt):
         """Run one prompt through the model, timed, isolating its own failure --
@@ -308,13 +311,14 @@ def main(args):
         try:
             output = llm.inference(prompt)
             usage = getattr(llm, "last_usage", None)
+            reasoning = getattr(llm, "last_reasoning", None)
             error = None
             capture_example_formatted_prompt()
         except Exception as exc:
-            output, usage, error = None, None, repr(exc)
+            output, usage, reasoning, error = None, None, None, repr(exc)
         latency_ms = (time.time() - start_time) * 1000
-        return {"output": output, "usage": usage, "latency_ms": latency_ms,
-                "error": error}
+        return {"output": output, "usage": usage, "reasoning": reasoning,
+                "latency_ms": latency_ms, "error": error}
 
     def infer_chunk(prompts):
         """Run one chunk as a single batched call. On ANY batch-level failure
@@ -328,14 +332,20 @@ def main(args):
         try:
             outputs = llm.inference_batch(prompts)
             usages = getattr(llm, "last_usage_batch", None) or [None] * len(prompts)
+            # A backend without reasoning support simply has none to report; a
+            # short list would silently misalign, so only a full one is used.
+            reasonings = getattr(llm, "last_reasoning_batch", None)
+            if not reasonings or len(reasonings) != len(prompts):
+                reasonings = [None] * len(prompts)
             if len(outputs) != len(prompts) or len(usages) != len(prompts):
                 raise ValueError(
                     f"inference_batch returned {len(outputs)} outputs / "
                     f"{len(usages)} usages for {len(prompts)} prompts")
             latency_ms = (time.time() - start_time) * 1000
             capture_example_formatted_prompt()
-            return [{"output": o, "usage": u, "latency_ms": latency_ms,
-                     "error": None} for o, u in zip(outputs, usages)]
+            return [{"output": o, "usage": u, "reasoning": r,
+                     "latency_ms": latency_ms, "error": None}
+                    for o, u, r in zip(outputs, usages, reasonings)]
         except Exception as exc:
             print(f"[Warning] Batched inference failed ({exc!r}); falling back "
                   f"to per-prompt for {len(prompts)} intersection(s).")
@@ -367,7 +377,7 @@ def main(args):
                 query_idx += 1
                 next_phase = finalize_decision(
                     step, req, res["output"], res["latency_ms"], res["usage"],
-                    res["error"])
+                    res["error"], res.get("reasoning"))
             next_phases[req["intersection_id"]] = next_phase
         return next_phases
 

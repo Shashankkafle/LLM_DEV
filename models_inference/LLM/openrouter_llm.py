@@ -7,7 +7,9 @@ and no run_matrix plumbing. Speaks OpenRouter's OpenAI-compatible
 
 Exposes the same duck-typed surface the runner consumes from LLM_Inference:
 initialize_llm(), inference(), inference_batch(), describe(), and the
-last_usage / last_usage_batch / last_formatted_prompt side-channels.
+last_usage / last_usage_batch / last_formatted_prompt side-channels, plus
+last_reasoning / last_reasoning_batch for models that return their chain of
+thought as separate reasoning tokens.
 """
 
 import json
@@ -88,12 +90,42 @@ def _extract_content(body):
 
 
 def _extract_usage(body):
-    """Token counts under the same keys the recorder already expects."""
+    """Token counts under the same keys the recorder already expects.
+
+    reasoning_tokens is a subset of completion_tokens, not an addition to it --
+    it is billed as output either way, and is broken out so a thinking model's
+    spend is attributable."""
     usage = body.get("usage") or {}
+    details = usage.get("completion_tokens_details") or {}
     return {
         "prompt_tokens": usage.get("prompt_tokens"),
         "completion_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": details.get("reasoning_tokens"),
     }
+
+
+def _extract_reasoning(body):
+    """The model's chain of thought, when it emits one as separate reasoning
+    tokens rather than inside the answer text.
+
+    Models that think out loud in plain content (the Qwen fine-tune, most
+    non-thinking models) return None here -- their reasoning is already the
+    recorded raw_text. Nothing is requested that the caller did not ask for:
+    this only reads what the response happens to carry, so enabling it cannot
+    change routing, cost, or the decisions themselves.
+    """
+    try:
+        message = body["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if message.get("reasoning"):
+        return message["reasoning"]
+    # Newer providers only populate the structured form.
+    details = message.get("reasoning_details") or []
+    chunks = [d.get("text") or d.get("summary") or "" for d in details
+              if isinstance(d, dict)]
+    joined = "".join(chunks).strip()
+    return joined or None
 
 
 class OpenRouter_Inference:
@@ -111,6 +143,10 @@ class OpenRouter_Inference:
         self.last_usage = None
         # Per-prompt token counts from the most recent inference_batch().
         self.last_usage_batch = None
+        # Chain of thought for the most recent call, when the model emits one
+        # separately from its answer text. None for non-thinking models.
+        self.last_reasoning = None
+        self.last_reasoning_batch = None
         self.last_formatted_prompt = None
 
     def initialize_llm(self):
@@ -216,6 +252,7 @@ class OpenRouter_Inference:
         messages = self._format_prompt(raw_prompt)
         body = self._complete(messages)
         self.last_usage = _extract_usage(body)
+        self.last_reasoning = _extract_reasoning(body)
         self.last_formatted_prompt = _as_text(messages)
         return _extract_content(body)
 
@@ -233,6 +270,7 @@ class OpenRouter_Inference:
         """
         if not raw_prompts:
             self.last_usage_batch = []
+            self.last_reasoning_batch = []
             return []
 
         batch = [self._format_prompt(prompt) for prompt in raw_prompts]
@@ -240,5 +278,6 @@ class OpenRouter_Inference:
             bodies = list(pool.map(self._complete, batch))
 
         self.last_usage_batch = [_extract_usage(body) for body in bodies]
+        self.last_reasoning_batch = [_extract_reasoning(body) for body in bodies]
         self.last_formatted_prompt = _as_text(batch[0])
         return [_extract_content(body) for body in bodies]
