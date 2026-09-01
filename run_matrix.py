@@ -84,7 +84,8 @@ def build_command(combo, run_group, test_name):
         # Generation budget. Not part of run identity: the arm that needs a
         # bigger budget is a different --llm_path, which the identity already
         # carries, so adding these would only invalidate every existing run.
-        if extra.get("max_new_tokens"):
+        # "is not None", not truthiness: 0 is the "uncapped" sentinel.
+        if extra.get("max_new_tokens") is not None:
             cmd += ["--max_new_tokens", str(extra["max_new_tokens"])]
         if extra.get("request_timeout"):
             cmd += ["--request_timeout", str(extra["request_timeout"])]
@@ -227,7 +228,8 @@ def overrides_from(args):
         ("llm_paths", args.llm_paths),
         ("max_new_tokens", args.max_new_tokens),
         ("request_timeout", args.request_timeout),
-        ("reasoning_max_tokens", args.reasoning_max_tokens)) if v}
+        ("reasoning_max_tokens", args.reasoning_max_tokens))
+            if v is not None}
 
 
 def main(args):

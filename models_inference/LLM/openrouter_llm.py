@@ -144,7 +144,10 @@ class OpenRouter_Inference:
                  reasoning_max_tokens=None):
         self.llm_path_arg = llm_path
         self.model = _model_from_path(llm_path)
-        self.max_new_tokens = max_new_tokens or LLM_MAX_NEW_TOKENS
+        # Explicit None check, not `or`: 0 is the "uncapped" sentinel and must
+        # not fall back to the default.
+        self.max_new_tokens = (LLM_MAX_NEW_TOKENS if max_new_tokens is None
+                               else max_new_tokens)
         # Bounds the thinking specifically, leaving the rest of max_tokens for
         # the answer. A thinking model's cost is bimodal -- a typical decision
         # is cheap, a few run away and eat the whole budget -- so capping the
@@ -181,7 +184,16 @@ class OpenRouter_Inference:
                 f"{self.llm_path_arg!r} needs it.")
         self._preflight()
         print(f"[Info] OpenRouter backend ready: model={self.model} "
-              f"resolved={self.resolved_model} provider={self.resolved_provider}")
+              f"resolved={self.resolved_model} provider={self.resolved_provider} "
+              f"max_tokens={self.max_new_tokens or 'uncapped'}")
+        # Uncapped, a single runaway generation can outlast any fixed timeout --
+        # and a timeout is retryable, so it would be billed MAX_ATTEMPTS times
+        # and still fail. Nothing bounds a decision's cost but the clock.
+        if not self.max_new_tokens and self.timeout_s < 600:
+            print(f"[Warning] max_tokens is uncapped but --request_timeout is "
+                  f"{self.timeout_s}s. A long generation will time out, and a "
+                  f"timeout is retried up to {MAX_ATTEMPTS} times -- you would "
+                  f"pay for every attempt. Raise --request_timeout.")
 
     def _preflight(self):
         """One tiny request before SUMO starts. A bad key, an unknown model or a
@@ -270,9 +282,13 @@ class OpenRouter_Inference:
         payload = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": self.max_new_tokens,
             "temperature": LLM_TEMPERATURE,
         }
+        # max_new_tokens=0 means uncapped: omit max_tokens entirely so the model
+        # runs to its own stop or its context limit, rather than to a number we
+        # picked. Sending 0 would be a request for zero tokens.
+        if self.max_new_tokens:
+            payload["max_tokens"] = self.max_new_tokens
         # Only sent when asked for: a non-thinking model would be handed a
         # parameter it never needs, and the non-CoT arms must stay byte-identical.
         if self.reasoning_max_tokens:

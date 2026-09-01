@@ -305,7 +305,8 @@ def expand_experiment(name, overrides=None):
     # which identity already carries. Putting them in the key would invalidate
     # every completed run for no gain. Both are recorded in the run manifest.
     for key in ("max_new_tokens", "request_timeout", "reasoning_max_tokens"):
-        if overrides.get(key):
+        # "is not None": max_new_tokens=0 means uncapped, not unset.
+        if overrides.get(key) is not None:
             extra[key] = overrides[key]
 
     # The model is a sweep dimension for LLM runs, like seeds and blockages: it

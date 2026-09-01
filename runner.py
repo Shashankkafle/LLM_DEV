@@ -80,7 +80,10 @@ def parse_args():
              "LLM_MAX_NEW_TOKENS). A chain-of-thought model spends its "
              "reasoning tokens out of this same budget, so it needs a far "
              "larger value than the fine-tuned arms -- too low and the model "
-             "returns an empty completion, which the runner can only hold on.")
+             "returns an empty completion, which the runner can only hold on. "
+             "Pass 0 to send no cap at all and let the model run to its own "
+             "stop or its context limit (OpenRouter backend only); raise "
+             "--request_timeout to match.")
     parser.add_argument(
         "--reasoning_max_tokens", type=int, default=None,
         help="Cap the thinking specifically, leaving the rest of "

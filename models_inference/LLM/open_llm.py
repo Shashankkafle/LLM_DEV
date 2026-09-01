@@ -15,6 +15,11 @@ class LLM_Inference:
     def __init__(self, llm_path, max_new_tokens=None):
         self.llm_path_arg = llm_path
         self.llm_path = self._resolve_snapshot_path(llm_path)
+        if max_new_tokens == 0:
+            raise ValueError(
+                "--max_new_tokens 0 (uncapped) is an OpenRouter-only setting: "
+                "HuggingFace generate() needs a finite budget. Pass a real "
+                "number for a local model.")
         self.max_new_tokens = max_new_tokens or LLM_MAX_NEW_TOKENS
         self.model = None
         self.tokenizer = None
