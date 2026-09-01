@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from configurations import (
     LLM_MAX_NEW_TOKENS,
+    LLM_REQUEST_TIMEOUT_S,
     LLM_TEMPERATURE,
     LLM_SYSTEM_PROMPT,
 )
@@ -30,7 +31,6 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 API_KEY_ENV = "OPENROUTER_API_KEY"
 BASE_URL_ENV = "OPENROUTER_BASE_URL"
 
-REQUEST_TIMEOUT_S = 120
 MAX_ATTEMPTS = 4
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 
@@ -57,11 +57,11 @@ def _as_text(messages):
     return json.dumps(messages, indent=2)
 
 
-def _send(request):
+def _send(request, timeout_s):
     """One POST. Transient failures raise _RetryableError; everything else is
     fatal and raises straight through."""
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_S) as response:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
             body = json.load(response)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:500]
@@ -94,13 +94,24 @@ def _extract_usage(body):
 
     reasoning_tokens is a subset of completion_tokens, not an addition to it --
     it is billed as output either way, and is broken out so a thinking model's
-    spend is attributable."""
+    spend is attributable.
+
+    finish_reason rides along here because it is the only thing that separates
+    "the model had nothing useful to say" from "the budget ran out mid-answer":
+    a thinking model spends reasoning tokens out of max_tokens, so an
+    undersized cap yields finish_reason == "length" with empty content, which
+    is indistinguishable from a genuine parse failure downstream."""
     usage = body.get("usage") or {}
     details = usage.get("completion_tokens_details") or {}
+    try:
+        finish_reason = body["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError):
+        finish_reason = None
     return {
         "prompt_tokens": usage.get("prompt_tokens"),
         "completion_tokens": usage.get("completion_tokens"),
         "reasoning_tokens": details.get("reasoning_tokens"),
+        "finish_reason": finish_reason,
     }
 
 
@@ -129,9 +140,14 @@ def _extract_reasoning(body):
 
 
 class OpenRouter_Inference:
-    def __init__(self, llm_path):
+    def __init__(self, llm_path, max_new_tokens=None, timeout_s=None):
         self.llm_path_arg = llm_path
         self.model = _model_from_path(llm_path)
+        self.max_new_tokens = max_new_tokens or LLM_MAX_NEW_TOKENS
+        # A chain-of-thought model can think for minutes on one decision; the
+        # 120 s default is sized for the non-thinking arms, and a timeout is
+        # retryable, so an undersized value burns MAX_ATTEMPTS generations.
+        self.timeout_s = timeout_s or LLM_REQUEST_TIMEOUT_S
         self.base_url = os.environ.get(BASE_URL_ENV, DEFAULT_BASE_URL).rstrip("/")
         self.api_key = None
         # What OpenRouter actually routed to. A hosted run is not reproducible
@@ -139,6 +155,7 @@ class OpenRouter_Inference:
         self.resolved_model = None
         self.resolved_provider = None
         self._logged_first_prompt = False
+        self._budget_exhausted_calls = 0
         # Set by every inference() call, read by the runner's recorder.
         self.last_usage = None
         # Per-prompt token counts from the most recent inference_batch().
@@ -181,9 +198,10 @@ class OpenRouter_Inference:
             "resolved_provider": self.resolved_provider,
             "base_url": self.base_url,
             "generation": {
-                "max_new_tokens": LLM_MAX_NEW_TOKENS,
+                "max_new_tokens": self.max_new_tokens,
                 "temperature": LLM_TEMPERATURE,
             },
+            "request_timeout_s": self.timeout_s,
             "system_prompt": LLM_SYSTEM_PROMPT,
         }
 
@@ -226,7 +244,7 @@ class OpenRouter_Inference:
         last_error = None
         for attempt in range(MAX_ATTEMPTS):
             try:
-                body = _send(request)
+                body = _send(request, self.timeout_s)
                 self._remember_routing(body)
                 return body
             except _RetryableError as exc:
@@ -244,9 +262,24 @@ class OpenRouter_Inference:
         return self._post_json({
             "model": self.model,
             "messages": messages,
-            "max_tokens": LLM_MAX_NEW_TOKENS,
+            "max_tokens": self.max_new_tokens,
             "temperature": LLM_TEMPERATURE,
         })
+
+    def _warn_if_budget_exhausted(self, content, usage):
+        """Say so, loudly, when the cap -- not the model -- ate the answer.
+
+        Downstream this is just a parse error that holds the current phase, so
+        without this a whole run can degrade to "hold everything" while still
+        producing a complete, plausible-looking results file."""
+        if content or usage.get("finish_reason") != "length":
+            return
+        self._budget_exhausted_calls += 1
+        if self._budget_exhausted_calls <= 3:
+            print(f"[Warning] Empty completion at max_tokens={self.max_new_tokens} "
+                  f"(finish_reason=length, reasoning_tokens="
+                  f"{usage.get('reasoning_tokens')}). The model spent its whole "
+                  f"budget thinking; raise --max_new_tokens.")
 
     def inference(self, raw_prompt):
         messages = self._format_prompt(raw_prompt)
@@ -254,7 +287,9 @@ class OpenRouter_Inference:
         self.last_usage = _extract_usage(body)
         self.last_reasoning = _extract_reasoning(body)
         self.last_formatted_prompt = _as_text(messages)
-        return _extract_content(body)
+        content = _extract_content(body)
+        self._warn_if_budget_exhausted(content, self.last_usage)
+        return content
 
     def inference_batch(self, raw_prompts):
         """Concurrent sibling of inference(): one independent request per prompt.
@@ -280,4 +315,7 @@ class OpenRouter_Inference:
         self.last_usage_batch = [_extract_usage(body) for body in bodies]
         self.last_reasoning_batch = [_extract_reasoning(body) for body in bodies]
         self.last_formatted_prompt = _as_text(batch[0])
-        return [_extract_content(body) for body in bodies]
+        contents = [_extract_content(body) for body in bodies]
+        for content, usage in zip(contents, self.last_usage_batch):
+            self._warn_if_budget_exhausted(content, usage)
+        return contents

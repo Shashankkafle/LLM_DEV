@@ -102,6 +102,9 @@ class MetricsRecorder:
         self.inference_latencies_ms = []
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # Subset of total_completion_tokens, not an addition to it: a thinking
+        # model's chain of thought is billed as output either way.
+        self.total_reasoning_tokens = 0
 
     def _trip_averages(self):
         """Averages over vehicles that have actually completed their trip so far."""
@@ -370,6 +373,7 @@ class MetricsRecorder:
         )
         summary["total_prompt_tokens"] = self.total_prompt_tokens or None
         summary["total_completion_tokens"] = self.total_completion_tokens or None
+        summary["total_reasoning_tokens"] = self.total_reasoning_tokens or None
         summary["valid_response_rate"] = (
             round(valid_responses / llm_queried, 4) if llm_queried > 0 else None
         )
@@ -443,7 +447,7 @@ class MetricsRecorder:
                         latency_ms, extracted_signal, intersection_id,
                         blockage_facts=None, exit_blockage_facts=None,
                         blockage_info_in_prompt=None, token_usage=None,
-                        error=None):
+                        error=None, reasoning=None):
         """Record one decision point.
 
         decision_type is one of:
@@ -458,6 +462,8 @@ class MetricsRecorder:
         blockage_facts / exit_blockage_facts are the structured describer
         outputs, recorded even when --hide_blockage_info keeps them out of the
         prompt (blockage_info_in_prompt says whether the prompt showed them).
+        reasoning is the model's chain of thought when the backend returns it as
+        separate reasoning tokens; None for models that think inside raw_text.
         """
         self.total_decisions += 1
 
@@ -483,8 +489,11 @@ class MetricsRecorder:
         if decision_type != "no_action_empty":
             self.inference_latencies_ms.append(latency_ms)
         if token_usage:
-            self.total_prompt_tokens += token_usage.get("prompt_tokens", 0)
-            self.total_completion_tokens += token_usage.get("completion_tokens", 0)
+            # "or 0", not a .get default: a provider that omits a count sends an
+            # explicit null, which a default would let through and crash the sum.
+            self.total_prompt_tokens += token_usage.get("prompt_tokens") or 0
+            self.total_completion_tokens += token_usage.get("completion_tokens") or 0
+            self.total_reasoning_tokens += token_usage.get("reasoning_tokens") or 0
 
         decision_event = {
             "step": step,
@@ -499,6 +508,7 @@ class MetricsRecorder:
             "llm_input": {"user_prompt": prompt},
             "llm_output": {
                 "raw_text": llm_output,
+                "reasoning": reasoning,
                 "extracted_signal": extracted_signal,
                 "parsing_valid": parsing_valid,
                 "error": error,
@@ -518,6 +528,10 @@ class MetricsRecorder:
                 "inference_latency_ms": round(latency_ms, 2),
                 "prompt_tokens": (token_usage or {}).get("prompt_tokens"),
                 "completion_tokens": (token_usage or {}).get("completion_tokens"),
+                "reasoning_tokens": (token_usage or {}).get("reasoning_tokens"),
+                # "length" means the model hit max_new_tokens mid-answer -- the
+                # signal that separates a budget problem from a model failure.
+                "finish_reason": (token_usage or {}).get("finish_reason"),
             },
         }
 

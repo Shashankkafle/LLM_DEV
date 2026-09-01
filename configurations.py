@@ -206,7 +206,12 @@ SUMO_GUI_BINARY = "sumo-gui"
 # LLM inference
 # =============================================================================
 
+# Defaults for the fine-tuned Qwen arms. Both are overridable per run
+# (runner.py --max_new_tokens / --request_timeout): a chain-of-thought model
+# spends reasoning tokens out of the same budget as its answer, so 1024 makes it
+# return an empty completion, which the runner can only treat as a parse error.
 LLM_MAX_NEW_TOKENS = 1024
+LLM_REQUEST_TIMEOUT_S = 120
 LLM_TEMPERATURE = 0.0
 LLM_DO_SAMPLE = False
 # Event-independent commonsense block (event-text templates v2.1, section 0).

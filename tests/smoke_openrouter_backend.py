@@ -43,13 +43,19 @@ class FakeOpenRouter:
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
     @staticmethod
-    def _completion(content, prompt_tokens=759, completion_tokens=42):
+    def _completion(content, prompt_tokens=759, completion_tokens=42,
+                    reasoning_tokens=None, finish_reason="stop"):
+        usage = {"prompt_tokens": prompt_tokens,
+                 "completion_tokens": completion_tokens}
+        if reasoning_tokens is not None:
+            usage["completion_tokens_details"] = {
+                "reasoning_tokens": reasoning_tokens}
         return {
             "model": "google/gemma-3-27b-it",
             "provider": "Google AI Studio",
-            "choices": [{"message": {"role": "assistant", "content": content}}],
-            "usage": {"prompt_tokens": prompt_tokens,
-                      "completion_tokens": completion_tokens},
+            "choices": [{"message": {"role": "assistant", "content": content},
+                         "finish_reason": finish_reason}],
+            "usage": usage,
         }
 
     def _next(self, payload):
@@ -105,11 +111,11 @@ def restore_real_key():
         os.environ["OPENROUTER_API_KEY"] = REAL_KEY
 
 
-def fresh(script=None):
+def fresh(script=None, **kwargs):
     """A ready-to-use client, with the fake reset to `script`."""
     fake.script = script or [(200, fake._completion("<signal>ETWT</signal>"))]
     fake.requests.clear()
-    llm = OpenRouter_Inference(MODEL)
+    llm = OpenRouter_Inference(MODEL, **kwargs)
     llm.initialize_llm()
     fake.requests.clear()  # drop the preflight
     return llm
@@ -171,7 +177,8 @@ check(sent["messages"][0]["content"] == mod.LLM_SYSTEM_PROMPT,
 check(sent["messages"][1]["content"] == "STATE HERE",
       "the user turn is the prompt verbatim, unwrapped")
 check(output == "<signal>ETWT</signal>", "inference() returns the assistant text")
-check(llm.last_usage == {"prompt_tokens": 759, "completion_tokens": 42},
+check(llm.last_usage == {"prompt_tokens": 759, "completion_tokens": 42,
+                         "reasoning_tokens": None, "finish_reason": "stop"},
       "last_usage carries the server's token counts")
 check(runner.parse_llm_signal(output) == "ETWT",
       "the runner's existing parser reads the hosted output unchanged")
@@ -185,6 +192,33 @@ check(described["resolved_provider"] == "Google AI Studio",
       "describe() reports which provider actually served the run")
 check(TEST_KEY not in json.dumps(described),
       "describe() never exposes the API key")
+
+# --- 6b. a thinking model's budget overrides ---------------------------------
+# A CoT model spends reasoning tokens out of max_tokens, so the cap and the
+# timeout have to be raisable per run without editing configurations.py.
+
+llm = fresh(max_new_tokens=32000, timeout_s=600)
+llm.inference("STATE HERE")
+check(fake.requests[0]["max_tokens"] == 32000,
+      "an overridden max_new_tokens reaches the wire")
+check(llm.describe()["generation"]["max_new_tokens"] == 32000
+      and llm.describe()["request_timeout_s"] == 600,
+      "describe() records the overrides, so the manifest pins the real budget")
+check(fresh().max_new_tokens == mod.LLM_MAX_NEW_TOKENS
+      and fresh().timeout_s == mod.LLM_REQUEST_TIMEOUT_S,
+      "omitting the overrides keeps the configurations.py defaults")
+
+# reasoning_tokens is broken out of completion_tokens, and finish_reason is what
+# tells a budget exhaustion apart from a model that had nothing to say.
+llm = fresh([(200, fake._completion("", completion_tokens=1024,
+                                    reasoning_tokens=1024,
+                                    finish_reason="length"))])
+check(llm.inference("STATE HERE") == "",
+      "a budget-exhausted call still returns '' rather than raising")
+check(llm.last_usage["reasoning_tokens"] == 1024
+      and llm.last_usage["finish_reason"] == "length",
+      "usage attributes the spend to reasoning and flags the truncation")
+fake.script = [(200, fake._completion("<signal>ETWT</signal>"))]
 
 # --- 7. batching: order preserved, usage aligned -----------------------------
 

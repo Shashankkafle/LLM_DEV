@@ -75,6 +75,19 @@ def parse_args():
              "batches every intersection switching on the same step into one "
              "inference call; --sequential forces the old behavior.")
     parser.add_argument(
+        "--max_new_tokens", type=int, default=None,
+        help="Generation cap per decision (default: configurations."
+             "LLM_MAX_NEW_TOKENS). A chain-of-thought model spends its "
+             "reasoning tokens out of this same budget, so it needs a far "
+             "larger value than the fine-tuned arms -- too low and the model "
+             "returns an empty completion, which the runner can only hold on.")
+    parser.add_argument(
+        "--request_timeout", type=int, default=None,
+        help="Per-request timeout in seconds for the OpenRouter backend "
+             "(default: configurations.LLM_REQUEST_TIMEOUT_S). Raise it for a "
+             "slow thinking model: a timeout is retried, so a low value pays "
+             "for several full generations and still fails.")
+    parser.add_argument(
         "--max_batch_size", type=int, default=0,
         help="Cap the per-step inference batch (0 = no cap, one batch per step). "
              "Lower it if a wide batch pressures GPU memory; results are "
@@ -82,13 +95,17 @@ def parse_args():
     return parser.parse_args()
 
 
-def build_llm(llm_path):
+def build_llm(llm_path, max_new_tokens=None, request_timeout=None):
     """Local HuggingFace model by default; an 'openrouter:<model>' path routes
     the decisions to the hosted API instead. Both satisfy the same interface,
-    so nothing downstream of here knows which backend it is talking to."""
+    so nothing downstream of here knows which backend it is talking to.
+
+    request_timeout only reaches the hosted backend -- local generation has no
+    socket to time out."""
     if llm_path.startswith(OPENROUTER_PREFIX):
-        return OpenRouter_Inference(llm_path)
-    return LLM_Inference(llm_path=llm_path)
+        return OpenRouter_Inference(llm_path, max_new_tokens=max_new_tokens,
+                                    timeout_s=request_timeout)
+    return LLM_Inference(llm_path=llm_path, max_new_tokens=max_new_tokens)
 
 
 def _chunk(items, size):
@@ -148,7 +165,8 @@ def state_is_empty(state_dict):
 def main(args):
     conf = INTERSECTION_CONFIGS[args.intersection_config]
 
-    llm = build_llm(args.llm_path)
+    llm = build_llm(args.llm_path, max_new_tokens=args.max_new_tokens,
+                    request_timeout=args.request_timeout)
     llm.initialize_llm()
 
     _, blockage_manager = build_blockage_manager(args.blockage_scenario)

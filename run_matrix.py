@@ -81,6 +81,13 @@ def build_command(combo, run_group, test_name):
             cmd += ["--sequential"]
         if extra.get("max_batch_size"):
             cmd += ["--max_batch_size", str(extra["max_batch_size"])]
+        # Generation budget. Not part of run identity: the arm that needs a
+        # bigger budget is a different --llm_path, which the identity already
+        # carries, so adding these would only invalidate every existing run.
+        if extra.get("max_new_tokens"):
+            cmd += ["--max_new_tokens", str(extra["max_new_tokens"])]
+        if extra.get("request_timeout"):
+            cmd += ["--request_timeout", str(extra["request_timeout"])]
     return cmd
 
 
@@ -193,6 +200,12 @@ def parse_args():
                              "in order. Local model dirs and/or "
                              "'openrouter:<provider>/<model>'. Part of run "
                              "identity, so models never pool with each other.")
+    parser.add_argument("--max_new_tokens", type=int,
+                        help="Override the LLM generation cap (see runner.py). "
+                             "Not part of run identity.")
+    parser.add_argument("--request_timeout", type=int,
+                        help="Override the OpenRouter per-request timeout in "
+                             "seconds. Not part of run identity.")
     parser.add_argument("--force", action="store_true",
                         help="Re-run every combo even if a completed run exists")
     parser.add_argument("--dry_run", action="store_true",
@@ -206,7 +219,9 @@ def overrides_from(args):
         ("seeds", args.seeds), ("controllers", args.controllers),
         ("configs", args.configs), ("blockages", args.blockages),
         ("steps", args.steps), ("num_rounds", args.num_rounds),
-        ("llm_paths", args.llm_paths)) if v}
+        ("llm_paths", args.llm_paths),
+        ("max_new_tokens", args.max_new_tokens),
+        ("request_timeout", args.request_timeout)) if v}
 
 
 def main(args):

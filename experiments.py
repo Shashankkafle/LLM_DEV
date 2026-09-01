@@ -166,7 +166,7 @@ EXPERIMENTS = {
     "llm_real_normal": {
         "controllers": ["llm"],
         "configs": ["hzreal"],
-        "seeds": [1, 2, 3],
+        "seeds": [1, 2, 3, 4, 5],
         "blockages": ["none"],
         "steps": 3600,
         "intersection_config": "three_lane",
@@ -177,7 +177,7 @@ EXPERIMENTS = {
     "llm_real_c3_text": {
         "controllers": ["llm"],
         "configs": ["hzreal"],
-        "seeds": [1, 2, 3],
+        "seeds": [1, 2, 3, 4, 5],
         "blockages": ["c3"],
         "steps": 3600,
         "intersection_config": "three_lane",
@@ -188,7 +188,7 @@ EXPERIMENTS = {
     "llm_real_c3_notext": {
         "controllers": ["llm"],
         "configs": ["hzreal"],
-        "seeds": [1, 2, 3],
+        "seeds": [1, 2, 3, 4, 5],
         "blockages": ["c3"],
         "steps": 3600,
         "intersection_config": "three_lane",
@@ -220,7 +220,7 @@ EXPERIMENTS = {
     "llm_real_c2_text": {
         "controllers": ["llm"],
         "configs": ["hzreal"],
-        "seeds": [1, 2, 3],
+        "seeds": [1, 2, 3, 4, 5],
         "blockages": ["c2"],
         "steps": 3600,
         "intersection_config": "three_lane",
@@ -231,7 +231,7 @@ EXPERIMENTS = {
     "llm_real_c2_notext": {
         "controllers": ["llm"],
         "configs": ["hzreal"],
-        "seeds": [1, 2, 3],
+        "seeds": [1, 2, 3, 4, 5],
         "blockages": ["c2"],
         "steps": 3600,
         "intersection_config": "three_lane",
@@ -281,7 +281,8 @@ def make_combo(controller, config_alias, seed, blockage_alias, steps,
 def expand_experiment(name, overrides=None):
     """Expand an experiment into its list of combos. overrides may replace
     'controllers', 'configs', 'seeds', 'blockages', 'steps', 'num_rounds' or
-    'llm_paths' (for ad-hoc tweaks without editing the preset)."""
+    'llm_paths', 'max_new_tokens' or 'request_timeout' (for ad-hoc tweaks
+    without editing the preset)."""
     if name not in EXPERIMENTS:
         raise KeyError(f"Unknown experiment '{name}'. "
                        f"Known: {sorted(EXPERIMENTS)}")
@@ -298,6 +299,14 @@ def expand_experiment(name, overrides=None):
     # result -- it never silently pools with the 100-round runs.
     if overrides.get("num_rounds"):
         extra["num_rounds"] = overrides["num_rounds"]
+
+    # Generation budget and request timeout are deliberately NOT part of run
+    # identity: a model that needs a bigger budget is a different --llm_path,
+    # which identity already carries. Putting them in the key would invalidate
+    # every completed run for no gain. Both are recorded in the run manifest.
+    for key in ("max_new_tokens", "request_timeout"):
+        if overrides.get(key):
+            extra[key] = overrides[key]
 
     # The model is a sweep dimension for LLM runs, like seeds and blockages: it
     # is part of run identity, so each model is a distinct result that the

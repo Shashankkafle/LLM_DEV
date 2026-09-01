@@ -30,7 +30,6 @@ import torch
 
 sys.path.insert(0, ".")
 
-import models_inference.LLM.open_llm as open_llm_mod
 from models_inference.LLM.open_llm import LLM_Inference
 from configurations import LLM_DEFAULT_PATH
 from runner import parse_llm_signal
@@ -67,10 +66,8 @@ def parse_args():
 
 def main():
     args = parse_args()
-    # Both inference paths read this module global; shrink it for a fast check.
-    open_llm_mod.LLM_MAX_NEW_TOKENS = args.max_new_tokens
-
-    llm = LLM_Inference(llm_path=args.llm_path)
+    llm = LLM_Inference(llm_path=args.llm_path,
+                        max_new_tokens=args.max_new_tokens)
     device_map = "auto" if args.device == "auto" else None
     llm.initialize_llm(torch_dtype=getattr(torch, args.dtype), device_map=device_map)
     if args.device != "auto":

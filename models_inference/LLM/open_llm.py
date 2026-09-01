@@ -12,9 +12,10 @@ from configurations import (
 
 
 class LLM_Inference:
-    def __init__(self, llm_path):
+    def __init__(self, llm_path, max_new_tokens=None):
         self.llm_path_arg = llm_path
         self.llm_path = self._resolve_snapshot_path(llm_path)
+        self.max_new_tokens = max_new_tokens or LLM_MAX_NEW_TOKENS
         self.model = None
         self.tokenizer = None
         self.model_family = None
@@ -80,7 +81,7 @@ class LLM_Inference:
             "device_map": ({k: str(v) for k, v in device_map.items()}
                            if device_map else str(self.model.device)),
             "generation": {
-                "max_new_tokens": LLM_MAX_NEW_TOKENS,
+                "max_new_tokens": self.max_new_tokens,
                 "temperature": LLM_TEMPERATURE,
                 "do_sample": LLM_DO_SAMPLE,
             },
@@ -157,7 +158,7 @@ class LLM_Inference:
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=LLM_MAX_NEW_TOKENS,
+                max_new_tokens=self.max_new_tokens,
                 temperature=LLM_TEMPERATURE,
                 do_sample=LLM_DO_SAMPLE
             )
@@ -204,7 +205,7 @@ class LLM_Inference:
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=LLM_MAX_NEW_TOKENS,
+                max_new_tokens=self.max_new_tokens,
                 temperature=LLM_TEMPERATURE,
                 do_sample=LLM_DO_SAMPLE,
                 pad_token_id=self.tokenizer.pad_token_id,
