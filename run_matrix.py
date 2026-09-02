@@ -92,6 +92,11 @@ def build_command(combo, run_group, test_name, logs_dir):
             cmd += ["--request_timeout", str(extra["request_timeout"])]
         if extra.get("reasoning_max_tokens"):
             cmd += ["--reasoning_max_tokens", str(extra["reasoning_max_tokens"])]
+        # Unlike the budget flags, this one IS part of run identity: thinking on
+        # and thinking off are different arms of the same model, and must never
+        # pool into one result.
+        if extra.get("reasoning"):
+            cmd += ["--reasoning", str(extra["reasoning"])]
     return cmd
 
 
@@ -213,6 +218,10 @@ def parse_args():
     parser.add_argument("--reasoning_max_tokens", type=int,
                         help="Cap the LLM's thinking specifically (see runner.py). "
                              "Not part of run identity.")
+    parser.add_argument("--reasoning", choices=["auto", "on", "off"],
+                        help="Switch a hybrid local model's thinking on or off "
+                             "(see runner.py). Part of run identity, so an "
+                             "on-run never pools with an off-run.")
     parser.add_argument("--force", action="store_true",
                         help="Re-run every combo even if a completed run exists")
     parser.add_argument("--dry_run", action="store_true",
@@ -229,7 +238,8 @@ def overrides_from(args):
         ("llm_paths", args.llm_paths),
         ("max_new_tokens", args.max_new_tokens),
         ("request_timeout", args.request_timeout),
-        ("reasoning_max_tokens", args.reasoning_max_tokens))
+        ("reasoning_max_tokens", args.reasoning_max_tokens),
+        ("reasoning", args.reasoning))
             if v is not None}
 
 

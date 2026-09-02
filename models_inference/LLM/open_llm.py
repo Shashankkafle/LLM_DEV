@@ -11,10 +11,44 @@ from configurations import (
 )
 
 
+THINK_OPEN = "<think>"
+THINK_CLOSE = "</think>"
+
+# The chat-template variable a hybrid model exposes to switch thinking on or
+# off. Different families spell it differently; initialize_llm picks whichever
+# one the loaded template actually references.
+THINKING_TEMPLATE_VARS = ("enable_thinking", "thinking")
+
+
+def split_reasoning(text):
+    """Split a completion into (reasoning, answer).
+
+    A hybrid model emits its chain of thought inline as <think>...</think>
+    before the answer. That block must not reach the signal parser -- reasoning
+    text names phases constantly, so a regex over it would pick a phase the
+    model rejected. Returns (None, text) when there is no block.
+    """
+    if THINK_CLOSE in text:
+        reasoning, _, answer = text.partition(THINK_CLOSE)
+        # Some templates pre-open <think> in the prompt, so only the closing
+        # tag comes back from the model.
+        reasoning = reasoning.split(THINK_OPEN, 1)[-1]
+        return reasoning.strip(), answer.strip()
+    if THINK_OPEN in text:
+        # Truncated: the budget ran out mid-thought. The empty answer becomes a
+        # parse error downstream, which holds the phase -- the honest outcome.
+        answer, _, reasoning = text.partition(THINK_OPEN)
+        return reasoning.strip(), answer.strip()
+    return None, text
+
+
 class LLM_Inference:
-    def __init__(self, llm_path, max_new_tokens=None):
+    def __init__(self, llm_path, max_new_tokens=None, reasoning="auto"):
         self.llm_path_arg = llm_path
         self.llm_path = self._resolve_snapshot_path(llm_path)
+        self.reasoning = reasoning
+        # Set in initialize_llm once the real chat template is known.
+        self.thinking_var = None
         if max_new_tokens == 0:
             raise ValueError(
                 "--max_new_tokens 0 (uncapped) is an OpenRouter-only setting: "
@@ -30,6 +64,10 @@ class LLM_Inference:
         # Per-sequence token counts from the most recent inference_batch().
         self.last_usage_batch = None
         self.last_formatted_prompt = None
+        # Chain of thought for the most recent call, mirroring the OpenRouter
+        # backend so the runner's recorder reads both the same way.
+        self.last_reasoning = None
+        self.last_reasoning_batch = None
 
     @staticmethod
     def _resolve_snapshot_path(llm_path):
@@ -72,6 +110,34 @@ class LLM_Inference:
             print(f"[Info] No hf_device_map; model on: {self.model.device}")
         self.model_family = self._detect_model_family()
         print(f"[Info] Auto-detected model family: {self.model_family}")
+        self.thinking_var = self._resolve_thinking_var()
+
+    def _resolve_thinking_var(self):
+        """Which template variable --reasoning should set, or None for 'auto'.
+
+        apply_chat_template hands unknown kwargs to Jinja, where an
+        unreferenced variable is silently ignored -- so a model whose template
+        has no thinking switch would accept --reasoning off and think anyway.
+        Fail loudly here instead.
+        """
+        if self.reasoning == "auto":
+            return None
+        template = getattr(self.tokenizer, "chat_template", "") or ""
+        for name in THINKING_TEMPLATE_VARS:
+            if name in template:
+                print(f"[Info] Reasoning {self.reasoning}: setting "
+                      f"{name}={self.reasoning == 'on'} on the chat template.")
+                return name
+        raise ValueError(
+            f"--reasoning {self.reasoning} was requested, but the chat template of "
+            f"{self.llm_path} references none of {list(THINKING_TEMPLATE_VARS)}, so "
+            "the setting would be silently ignored. This model has no thinking "
+            "switch -- run it with --reasoning auto.")
+
+    def _template_kwargs(self):
+        if not self.thinking_var:
+            return {}
+        return {self.thinking_var: self.reasoning == "on"}
 
     def describe(self):
         """Model + generation config for the run manifest, so a run record
@@ -89,6 +155,8 @@ class LLM_Inference:
                 "max_new_tokens": self.max_new_tokens,
                 "temperature": LLM_TEMPERATURE,
                 "do_sample": LLM_DO_SAMPLE,
+                "reasoning": self.reasoning,
+                "thinking_template_var": self.thinking_var,
             },
             "system_prompt": LLM_SYSTEM_PROMPT,
             "chat_template_present": bool(getattr(self.tokenizer, "chat_template", None)),
@@ -126,7 +194,8 @@ class LLM_Inference:
                 {"role": "user",   "content": raw_user_content},
             ]
             formatted = self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+                messages, tokenize=False, add_generation_prompt=True,
+                **self._template_kwargs()
             )
         except Exception as e:
             print(f"[Warning] chat template rejected a system role ({e}); "
@@ -135,7 +204,8 @@ class LLM_Inference:
                 {"role": "user", "content": f"{system_prompt}\n\n{raw_user_content}"},
             ]
             formatted = self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+                messages, tokenize=False, add_generation_prompt=True,
+                **self._template_kwargs()
             )
         return self._log_first_prompt(formatted)
 
@@ -175,7 +245,10 @@ class LLM_Inference:
             "completion_tokens": int(generated_tokens.shape[0]),
         }
         self.last_formatted_prompt = formatted_prompt
-        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        reasoning, answer = split_reasoning(text)
+        self.last_reasoning = reasoning
+        return answer
 
     def inference_batch(self, raw_prompts):
         """Batched sibling of inference(): one generate() over many prompts.
@@ -198,6 +271,7 @@ class LLM_Inference:
         """
         if not raw_prompts:
             self.last_usage_batch = []
+            self.last_reasoning_batch = []
             return []
 
         formatted = [self._format_prompt(p) for p in raw_prompts]
@@ -220,17 +294,20 @@ class LLM_Inference:
         # generated tokens start at the shared padded input_length for all rows.
         input_length = inputs.input_ids.shape[1]
         stop_ids = self._stop_token_ids()
-        texts, usage = [], []
+        texts, usage, reasonings = [], [], []
         for i in range(len(formatted)):
             generated_tokens = outputs[i, input_length:]
-            texts.append(
+            reasoning, answer = split_reasoning(
                 self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
             )
+            texts.append(answer)
+            reasonings.append(reasoning)
             usage.append({
                 "prompt_tokens": int(inputs.attention_mask[i].sum()),
                 "completion_tokens": self._completion_length(generated_tokens, stop_ids),
             })
         self.last_usage_batch = usage
+        self.last_reasoning_batch = reasonings
         self.last_formatted_prompt = formatted[0]
         return texts
 

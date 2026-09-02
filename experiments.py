@@ -309,6 +309,11 @@ def expand_experiment(name, overrides=None):
         if overrides.get(key) is not None:
             extra[key] = overrides[key]
 
+    # --reasoning IS part of run identity (see _identity_fields): thinking on
+    # and thinking off are different arms of the same model.
+    if overrides.get("reasoning"):
+        extra["reasoning"] = overrides["reasoning"]
+
     # The model is a sweep dimension for LLM runs, like seeds and blockages: it
     # is part of run identity, so each model is a distinct result that the
     # matrix runs (and can skip/reuse) on its own.
@@ -358,14 +363,19 @@ def combo_slug(combo):
     seed = "dflt" if combo["seed"] is None else combo["seed"]
     slug = f"{token}_{combo['config_alias']}_{combo['blockage_alias']}_seed{seed}"
     llm_path = _combo_llm_path(combo)
-    return f"{slug}_{model_token(llm_path)}" if llm_path else slug
+    if llm_path:
+        slug = f"{slug}_{model_token(llm_path)}"
+    reasoning = combo["extra"].get("reasoning")
+    if reasoning and reasoning != "auto":
+        slug = f"{slug}_think-{reasoning}"
+    return slug
 
 
 # --- identity: what makes two runs the same result ---------------------------
 
 def _identity_fields(controller, simulation_config, intersection_config, steps,
                      seed, blockage_name, hide_info, info_scope, num_rounds,
-                     llm_path=None):
+                     llm_path=None, reasoning=None):
     # llm_path is appended, never inserted: config_key() drops the seed by
     # position (index 4), so the leading fields must keep their offsets.
     return (
@@ -379,6 +389,9 @@ def _identity_fields(controller, simulation_config, intersection_config, steps,
         info_scope or "both",
         num_rounds,
         llm_path,
+        # "auto" normalizes to None so runs from before the flag existed --
+        # whose manifests have no reasoning setting -- keep their identity.
+        None if reasoning in (None, "auto") else reasoning,
     )
 
 
@@ -398,7 +411,7 @@ def identity_from_combo(combo):
         combo["intersection_config"], combo["steps"], combo["seed"],
         combo["blockage_name"], extra.get("hide_blockage_info", False),
         extra.get("blockage_info_scope", "both"), extra.get("num_rounds"),
-        _combo_llm_path(combo))
+        _combo_llm_path(combo), extra.get("reasoning"))
 
 
 def identity_from_manifest(m):
@@ -411,7 +424,7 @@ def identity_from_manifest(m):
         env.get("seed"), blk.get("scenario_name", "none"),
         blk.get("hide_blockage_info", False),
         blk.get("blockage_info_scope", "both"), args.get("num_rounds"),
-        args.get("llm_path"))
+        args.get("llm_path"), args.get("reasoning"))
 
 
 def identity_key(identity):
