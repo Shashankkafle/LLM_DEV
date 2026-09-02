@@ -45,7 +45,9 @@ class StubLLM:
     """Replaces the real model: the run exercises every piece of wiring except
     inference itself, so prompts land in decisions.jsonl at full speed."""
 
-    def __init__(self, llm_path):
+    def __init__(self, llm_path, **kwargs):
+        # **kwargs: build_llm passes the real backend's settings (max_new_tokens,
+        # reasoning, quantization...); none of them mean anything to a stub.
         pass
 
     def initialize_llm(self):
@@ -203,6 +205,16 @@ def run_matrix():
             hide_blockage_info=hide,
             blockage_info_scope="both",
             intersection_config="three_lane",
+            # The batching/LLM-backend flags runner.main reads. Defaults only --
+            # the stub never loads a model -- but they must exist or main() raises.
+            sequential=False,
+            max_batch_size=0,
+            max_new_tokens=None,
+            request_timeout=None,
+            reasoning_max_tokens=None,
+            reasoning="auto",
+            quantization="none",
+            logs_dir=None,
         ))
         run_dir = sorted(Path("logs").glob(f"pmx_{run_id}_*"))[-1]
         per_tl = {}

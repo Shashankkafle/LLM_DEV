@@ -314,6 +314,11 @@ def expand_experiment(name, overrides=None):
     if overrides.get("reasoning"):
         extra["reasoning"] = overrides["reasoning"]
 
+    # --quantization IS part of run identity for the same reason: 8-bit weights
+    # decide differently from full-precision ones.
+    if overrides.get("quantization"):
+        extra["quantization"] = overrides["quantization"]
+
     # The model is a sweep dimension for LLM runs, like seeds and blockages: it
     # is part of run identity, so each model is a distinct result that the
     # matrix runs (and can skip/reuse) on its own.
@@ -368,6 +373,9 @@ def combo_slug(combo):
     reasoning = combo["extra"].get("reasoning")
     if reasoning and reasoning != "auto":
         slug = f"{slug}_think-{reasoning}"
+    quantization = combo["extra"].get("quantization")
+    if quantization and quantization != "none":
+        slug = f"{slug}_{quantization}"
     return slug
 
 
@@ -375,7 +383,7 @@ def combo_slug(combo):
 
 def _identity_fields(controller, simulation_config, intersection_config, steps,
                      seed, blockage_name, hide_info, info_scope, num_rounds,
-                     llm_path=None, reasoning=None):
+                     llm_path=None, reasoning=None, quantization=None):
     # llm_path is appended, never inserted: config_key() drops the seed by
     # position (index 4), so the leading fields must keep their offsets.
     return (
@@ -392,6 +400,9 @@ def _identity_fields(controller, simulation_config, intersection_config, steps,
         # "auto" normalizes to None so runs from before the flag existed --
         # whose manifests have no reasoning setting -- keep their identity.
         None if reasoning in (None, "auto") else reasoning,
+        # Same normalization for the same reason: "none" is the pre-flag
+        # behavior, so it must key identically to a manifest that predates it.
+        None if quantization in (None, "none") else quantization,
     )
 
 
@@ -411,7 +422,8 @@ def identity_from_combo(combo):
         combo["intersection_config"], combo["steps"], combo["seed"],
         combo["blockage_name"], extra.get("hide_blockage_info", False),
         extra.get("blockage_info_scope", "both"), extra.get("num_rounds"),
-        _combo_llm_path(combo), extra.get("reasoning"))
+        _combo_llm_path(combo), extra.get("reasoning"),
+        extra.get("quantization"))
 
 
 def identity_from_manifest(m):
@@ -424,7 +436,8 @@ def identity_from_manifest(m):
         env.get("seed"), blk.get("scenario_name", "none"),
         blk.get("hide_blockage_info", False),
         blk.get("blockage_info_scope", "both"), args.get("num_rounds"),
-        args.get("llm_path"), args.get("reasoning"))
+        args.get("llm_path"), args.get("reasoning"),
+        args.get("quantization"))
 
 
 def identity_key(identity):

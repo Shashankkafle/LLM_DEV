@@ -1,7 +1,7 @@
 import os
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 from configurations import (
     LLM_MAX_NEW_TOKENS,
@@ -18,6 +18,8 @@ THINK_CLOSE = "</think>"
 # off. Different families spell it differently; initialize_llm picks whichever
 # one the loaded template actually references.
 THINKING_TEMPLATE_VARS = ("enable_thinking", "thinking")
+
+QUANTIZATION_CHOICES = ("none", "8bit", "4bit")
 
 
 def split_reasoning(text):
@@ -43,10 +45,16 @@ def split_reasoning(text):
 
 
 class LLM_Inference:
-    def __init__(self, llm_path, max_new_tokens=None, reasoning="auto"):
+    def __init__(self, llm_path, max_new_tokens=None, reasoning="auto",
+                 quantization="none"):
         self.llm_path_arg = llm_path
         self.llm_path = self._resolve_snapshot_path(llm_path)
         self.reasoning = reasoning
+        if quantization not in QUANTIZATION_CHOICES:
+            raise ValueError(
+                f"Unknown quantization {quantization!r}; "
+                f"expected one of {list(QUANTIZATION_CHOICES)}.")
+        self.quantization = quantization
         # Set in initialize_llm once the real chat template is known.
         self.thinking_var = None
         if max_new_tokens == 0:
@@ -101,7 +109,8 @@ class LLM_Inference:
             self.llm_path,
             torch_dtype=torch_dtype,
             device_map=device_map,
-            trust_remote_code=True
+            trust_remote_code=True,
+            **self._quantization_kwargs()
         )
         device_map = getattr(self.model, "hf_device_map", None)
         if device_map is not None:
@@ -111,6 +120,26 @@ class LLM_Inference:
         self.model_family = self._detect_model_family()
         print(f"[Info] Auto-detected model family: {self.model_family}")
         self.thinking_var = self._resolve_thinking_var()
+
+    def _quantization_kwargs(self):
+        """Load in reduced precision so a model too big for the GPU still fits.
+
+        Quantization changes the weights the run decides with, so it is part of
+        run identity (see experiments._identity_fields) -- an 8-bit run never
+        pools with a full-precision one.
+        """
+        if self.quantization == "none":
+            return {}
+        if self.quantization == "8bit":
+            config = BitsAndBytesConfig(load_in_8bit=True)
+        else:
+            config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+        print(f"[Info] Loading in {self.quantization} (bitsandbytes).")
+        return {"quantization_config": config}
 
     def _resolve_thinking_var(self):
         """Which template variable --reasoning should set, or None for 'auto'.
@@ -149,6 +178,7 @@ class LLM_Inference:
             "resolved_snapshot_path": self.llm_path,
             "model_family": self.model_family,
             "torch_dtype": str(getattr(self.model, "dtype", None)),
+            "quantization": self.quantization,
             "device_map": ({k: str(v) for k, v in device_map.items()}
                            if device_map else str(self.model.device)),
             "generation": {

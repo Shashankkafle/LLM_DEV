@@ -105,7 +105,9 @@ class StubLLM:
     """Fixed answer regardless of prompt, so all three runs make identical
     phase decisions and their physics stay comparable."""
 
-    def __init__(self, llm_path):
+    def __init__(self, llm_path, **kwargs):
+        # **kwargs: build_llm passes the real backend's settings (max_new_tokens,
+        # reasoning, quantization...); none of them mean anything to a stub.
         pass
 
     def initialize_llm(self):
@@ -136,6 +138,14 @@ def run_once(test_name, sumocfg, scenario, hide_info):
         intersection_config="single_intersection",
         sequential=False,
         max_batch_size=0,
+        # The LLM-backend flags runner.main reads. Defaults only -- the stub
+        # never loads a model -- but they must exist or main() raises.
+        max_new_tokens=None,
+        request_timeout=None,
+        reasoning_max_tokens=None,
+        reasoning="auto",
+        quantization="none",
+        logs_dir=None,
     )
     runner.main(args)
     return sorted(Path("logs").glob(f"{test_name}_*"))[-1]

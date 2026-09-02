@@ -97,6 +97,10 @@ def build_command(combo, run_group, test_name, logs_dir):
         # pool into one result.
         if extra.get("reasoning"):
             cmd += ["--reasoning", str(extra["reasoning"])]
+        # Same reasoning: quantized weights decide differently, so an 8bit run
+        # is its own result rather than a cheaper way to produce the same one.
+        if extra.get("quantization"):
+            cmd += ["--quantization", str(extra["quantization"])]
     return cmd
 
 
@@ -222,6 +226,10 @@ def parse_args():
                         help="Switch a hybrid local model's thinking on or off "
                              "(see runner.py). Part of run identity, so an "
                              "on-run never pools with an off-run.")
+    parser.add_argument("--quantization", choices=["none", "8bit", "4bit"],
+                        help="Load a local model in reduced precision (see "
+                             "runner.py). Part of run identity, so a quantized "
+                             "run never pools with a full-precision one.")
     parser.add_argument("--force", action="store_true",
                         help="Re-run every combo even if a completed run exists")
     parser.add_argument("--dry_run", action="store_true",
@@ -239,7 +247,8 @@ def overrides_from(args):
         ("max_new_tokens", args.max_new_tokens),
         ("request_timeout", args.request_timeout),
         ("reasoning_max_tokens", args.reasoning_max_tokens),
-        ("reasoning", args.reasoning))
+        ("reasoning", args.reasoning),
+        ("quantization", args.quantization))
             if v is not None}
 
 

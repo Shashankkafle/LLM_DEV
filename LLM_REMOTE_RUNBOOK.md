@@ -224,6 +224,65 @@ is about a third of that. Completion length dominates the spread. Avoid
 nothing but are rate-limited, which collides with the concurrent batch: fine for
 a smoke run, risky for a full arm. Shake out with `--simulation_steps 300` first.
 
+## 4d. Fitting a model that's too big — `--quantization`
+
+`--quantization {none,8bit,4bit}` loads a local model through bitsandbytes so one
+larger than the GPU still fits. The A40 has ~44.7 GB free, which rules out fp16
+for anything past ~20 B params:
+
+| Model | fp16 | 8bit | 4bit |
+|---|---|---|---|
+| Qwen2.5-14B (fine-tuned) | ~28 GB ✅ | — | — |
+| Gemma 4 26B A4B | ~50 GB ❌ | ~25 GB ✅ | ~13 GB ✅ |
+| Gemma 4 31B | ~61 GB ❌ | ~31 GB ✅ | ~17 GB ✅ |
+
+A Mixture-of-Experts model gets **no** memory relief from being sparse: Gemma 4
+26B A4B activates only 3.8 B params per token but keeps all 128 experts resident.
+Sparsity buys speed, not capacity. Without quantization `device_map="auto"` spills
+to CPU and streams expert weights over PCIe every token — days per seed, not hours.
+
+Quantization is part of run identity (`experiments._identity_fields`), so an 8bit
+run never pools with a full-precision one, `build_results.py` gives it its own
+row, and the run dir is tagged (`..._gemma-4-26B-A4B-it_think-off_8bit`). It is
+recorded twice in `run_manifest.json`: under `args` (what was asked for, and what
+skip/reuse matches on) and under `llm` (what the backend did, beside `torch_dtype`
+and `device_map`). Default `none` keys identically to runs predating the flag, so
+nothing already completed is invalidated.
+
+`--quantization` is local-only; the OpenRouter backend warns and ignores it, since
+the hosted server owns the precision it serves. `bitsandbytes` is a Linux-marked
+dependency in `pyproject.toml` — it arrives via `uv sync --locked`. **Never
+`uv pip install`** it or anything else here: that resolves outside the lock and
+will pull PyPI's CUDA-13 torch over the pinned cu126 build, which breaks CUDA
+outright on this box's 550 driver.
+
+Offline check of the whole flag (no GPU, no weights):
+
+```bash
+python tests/smoke_local_quantization.py
+```
+
+### Gemma 4 specifics
+
+- Use an **`-it`** repo. The base `google/gemma-4-26B-A4B` ships no chat template,
+  and `_format_prompt` then falls back to Alpaca — wrong format *and* a model
+  never trained to follow instructions.
+- `gemma-4-12B-it` (the "Unified" encoder-free variant) **will not load** on
+  transformers 5.9.0: its `gemma4_unified` model type is unregistered. The 31B,
+  26B A4B and E4B all declare plain `gemma4` and work.
+- Run with **`--reasoning off`**. Gemma 4 defaults to thinking on, reasoning draws
+  from the same `LLM_MAX_NEW_TOKENS` budget, and a long think truncates before the
+  `<signal>` — an empty answer the runner can only turn into a held phase.
+- **`--reasoning on` is not usable on this family yet.** Gemma delimits reasoning
+  as `<|channel>thought … <channel|>`, but `split_reasoning` only recognizes
+  `<think>`/`</think>`, so chain-of-thought would flow into the signal parser. A
+  thinking arm needs those delimiters added first.
+
+```bash
+python run_matrix.py --experiment llm_real_normal --seeds 1 2 3 \
+    --llm_paths google/gemma-4-26B-A4B-it --reasoning off --quantization 8bit
+```
+
 ## 5. Run in order — seed 1 first, verify, then the rest
 
 Long runs: wrap each in `tmux`/`nohup` and tee a log. A full 3600-step 14B run

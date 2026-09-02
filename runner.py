@@ -99,6 +99,13 @@ def parse_args():
              "thinking variable; a model whose template has no such variable "
              "fails at startup rather than silently ignoring the setting.")
     parser.add_argument(
+        "--quantization", choices=["none", "8bit", "4bit"], default="none",
+        help="Load a local model in reduced precision (bitsandbytes) so one too "
+             "big for the GPU still fits -- e.g. a 26B that needs ~50 GB in "
+             "fp16 fits an A40 at 8bit. Quantized weights decide differently "
+             "from full-precision ones, so this is part of run identity: an "
+             "8bit run never pools with a 'none' run of the same model.")
+    parser.add_argument(
         "--request_timeout", type=int, default=None,
         help="Per-request timeout in seconds for the OpenRouter backend "
              "(default: configurations.LLM_REQUEST_TIMEOUT_S). Raise it for a "
@@ -115,20 +122,23 @@ def parse_args():
 
 
 def build_llm(llm_path, max_new_tokens=None, request_timeout=None,
-              reasoning_max_tokens=None, reasoning="auto"):
+              reasoning_max_tokens=None, reasoning="auto", quantization="none"):
     """Local HuggingFace model by default; an 'openrouter:<model>' path routes
     the decisions to the hosted API instead. Both satisfy the same interface,
     so nothing downstream of here knows which backend it is talking to.
 
     request_timeout and reasoning_max_tokens only reach the hosted backend:
     local generation has no socket to time out and no separate reasoning
-    channel to bound. --reasoning is the mirror image: it is a chat-template
-    setting, and the hosted server owns the template."""
+    channel to bound. --reasoning and --quantization are the mirror image: the
+    hosted server owns its own chat template and its own serving precision."""
     if llm_path.startswith(OPENROUTER_PREFIX):
         if reasoning != "auto":
             print("[Warning] --reasoning is a local-backend setting (it toggles "
                   "the chat template's thinking variable); the hosted server "
                   "owns its own template. Ignored.")
+        if quantization != "none":
+            print("[Warning] --quantization is a local-backend setting; the "
+                  "hosted server owns the precision it serves. Ignored.")
         return OpenRouter_Inference(llm_path, max_new_tokens=max_new_tokens,
                                     timeout_s=request_timeout,
                                     reasoning_max_tokens=reasoning_max_tokens)
@@ -136,7 +146,7 @@ def build_llm(llm_path, max_new_tokens=None, request_timeout=None,
         print("[Warning] --reasoning_max_tokens is an OpenRouter-only setting; "
               "the local backend ignores it.")
     return LLM_Inference(llm_path=llm_path, max_new_tokens=max_new_tokens,
-                         reasoning=reasoning)
+                         reasoning=reasoning, quantization=quantization)
 
 
 def _chunk(items, size):
@@ -199,7 +209,8 @@ def main(args):
     llm = build_llm(args.llm_path, max_new_tokens=args.max_new_tokens,
                     request_timeout=args.request_timeout,
                     reasoning_max_tokens=args.reasoning_max_tokens,
-                    reasoning=args.reasoning)
+                    reasoning=args.reasoning,
+                    quantization=args.quantization)
     llm.initialize_llm()
 
     _, blockage_manager = build_blockage_manager(args.blockage_scenario)
