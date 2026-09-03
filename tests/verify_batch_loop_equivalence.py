@@ -39,7 +39,7 @@ class DeterministicStubLLM:
     """A stub whose answer depends on the prompt, so a batched mis-mapping would
     surface as a changed decision. No GPU or real model needed."""
 
-    def __init__(self, llm_path):
+    def __init__(self, llm_path, **kwargs):
         pass
 
     def initialize_llm(self, *args, **kwargs):
@@ -65,7 +65,16 @@ def run_once(test_name, config, sequential, max_batch_size):
         simulation_config=config, llm_path="stub", use_gui=False, seed=SEED,
         blockage_scenario=None, hide_blockage_info=False,
         blockage_info_scope="both", intersection_config="three_lane",
-        sequential=sequential, max_batch_size=max_batch_size)
+        sequential=sequential, max_batch_size=max_batch_size,
+        # The LLM-backend flags runner.main reads. Defaults only -- the stub
+        # never loads a model -- but they must exist or main() raises.
+        max_new_tokens=None,
+        request_timeout=None,
+        reasoning_max_tokens=None,
+        reasoning="auto",
+        quantization="none",
+        logs_dir=None,
+        )
     runner.main(args)
     return sorted(Path("logs").glob(f"{test_name}_*"))[-1]
 
@@ -114,7 +123,7 @@ def compare(label, base, other):
 
 def main():
     argparse.ArgumentParser(description=__doc__).parse_args()
-    runner.LLM_Inference = DeterministicStubLLM
+    runner.build_llm = lambda llm_path, **kwargs: DeterministicStubLLM(llm_path)
     config = CONFIGS["hz1"]  # Hangzhou 4x4 -> 16 intersections, real batches
 
     dir_seq = run_once("batchloop_seq", config, sequential=True, max_batch_size=0)

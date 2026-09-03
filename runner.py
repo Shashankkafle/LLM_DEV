@@ -9,8 +9,7 @@ import argparse
 import re
 import time
 
-from models_inference.LLM.open_llm import LLM_Inference
-from models_inference.LLM.openrouter_llm import OpenRouter_Inference, OPENROUTER_PREFIX
+from models_inference.LLM import http_llm
 from runner_common import (
     setup_run, run_control_loop, run_control_loop_batched, build_blockage_manager,
 )
@@ -35,10 +34,13 @@ def parse_args():
     parser.add_argument("--simulation_steps", type=int, default=DEFAULT_SIMULATION_STEPS)
     parser.add_argument("--simulation_config", type=str, default=DEFAULT_SIMULATION_CONFIG)
     parser.add_argument("--llm_path", type=str, default=LLM_DEFAULT_PATH,
-                        help="Local model directory, or "
-                             "'openrouter:<provider>/<model>' to run the "
-                             "decisions against an OpenRouter-hosted model "
-                             "(needs OPENROUTER_API_KEY).")
+                        help="'<scheme>:<model>' naming the server and the "
+                             "model it serves: 'vllm:<served-model-name>' for a "
+                             "local vLLM server (endpoint from VLLM_BASE_URL, "
+                             "default http://localhost:8000/v1), or "
+                             "'openrouter:<provider>/<model>' for a hosted one "
+                             "(needs OPENROUTER_API_KEY). Never a URL -- moving "
+                             "the server must not change run identity.")
     parser.add_argument("--use_gui", action="store_true")
     parser.add_argument("--seed", type=int, default=None,
                         help="SUMO random seed. Default keeps SUMO's fixed "
@@ -82,8 +84,7 @@ def parse_args():
              "larger value than the fine-tuned arms -- too low and the model "
              "returns an empty completion, which the runner can only hold on. "
              "Pass 0 to send no cap at all and let the model run to its own "
-             "stop or its context limit (OpenRouter backend only); raise "
-             "--request_timeout to match.")
+             "stop or its context limit; raise --request_timeout to match.")
     parser.add_argument(
         "--reasoning_max_tokens", type=int, default=None,
         help="Cap the thinking specifically, leaving the rest of "
@@ -93,22 +94,26 @@ def parse_args():
              "to answer, rather than paying for it and truncating anyway.")
     parser.add_argument(
         "--reasoning", choices=["auto", "on", "off"], default="auto",
-        help="Switch a hybrid model's thinking on or off (local backend). "
-             "'auto' leaves the model's chat template at its own default and "
-             "is what every existing run used. 'on'/'off' set the template's "
-             "thinking variable; a model whose template has no such variable "
-             "fails at startup rather than silently ignoring the setting.")
+        help="Switch a hybrid model's thinking on or off (vLLM backend), by "
+             "sending chat_template_kwargs={'enable_thinking': ...}. 'auto' "
+             "sends no key at all and is what every existing run used. A model "
+             "whose template ignores the variable fails at startup (proved with "
+             "two free /tokenize calls) rather than silently thinking anyway. "
+             "For a family that delimits reasoning some other way, launch the "
+             "server with its --reasoning-parser instead.")
     parser.add_argument(
-        "--quantization", choices=["none", "8bit", "4bit"], default="none",
-        help="Load a local model in reduced precision (bitsandbytes) so one too "
-             "big for the GPU still fits -- e.g. a 26B that needs ~50 GB in "
-             "fp16 fits an A40 at 8bit. Quantized weights decide differently "
-             "from full-precision ones, so this is part of run identity: an "
-             "8bit run never pools with a 'none' run of the same model.")
+        "--quantization", type=str, default="none",
+        help="Declare the precision the server was launched with (awq, gptq, "
+             "fp8, 8bit, ...). Purely a label: it changes nothing about the "
+             "request, and the API cannot verify it -- making it true is on "
+             "you. It exists because it is part of run identity, which is the "
+             "only thing stopping an AWQ-served run from pooling with an "
+             "fp16-served one. Better still, encode it in the served name "
+             "(--served-model-name qwen2.5_14b-awq) so it rides in --llm_path.")
     parser.add_argument(
         "--request_timeout", type=int, default=None,
-        help="Per-request timeout in seconds for the OpenRouter backend "
-             "(default: configurations.LLM_REQUEST_TIMEOUT_S). Raise it for a "
+        help="Per-request timeout in seconds (default: "
+             "configurations.LLM_REQUEST_TIMEOUT_S). Raise it for a "
              "slow thinking model: a timeout is retried, so a low value pays "
              "for several full generations and still fails.")
     parser.add_argument(
@@ -123,30 +128,12 @@ def parse_args():
 
 def build_llm(llm_path, max_new_tokens=None, request_timeout=None,
               reasoning_max_tokens=None, reasoning="auto", quantization="none"):
-    """Local HuggingFace model by default; an 'openrouter:<model>' path routes
-    the decisions to the hosted API instead. Both satisfy the same interface,
-    so nothing downstream of here knows which backend it is talking to.
-
-    request_timeout and reasoning_max_tokens only reach the hosted backend:
-    local generation has no socket to time out and no separate reasoning
-    channel to bound. --reasoning and --quantization are the mirror image: the
-    hosted server owns its own chat template and its own serving precision."""
-    if llm_path.startswith(OPENROUTER_PREFIX):
-        if reasoning != "auto":
-            print("[Warning] --reasoning is a local-backend setting (it toggles "
-                  "the chat template's thinking variable); the hosted server "
-                  "owns its own template. Ignored.")
-        if quantization != "none":
-            print("[Warning] --quantization is a local-backend setting; the "
-                  "hosted server owns the precision it serves. Ignored.")
-        return OpenRouter_Inference(llm_path, max_new_tokens=max_new_tokens,
-                                    timeout_s=request_timeout,
-                                    reasoning_max_tokens=reasoning_max_tokens)
-    if reasoning_max_tokens:
-        print("[Warning] --reasoning_max_tokens is an OpenRouter-only setting; "
-              "the local backend ignores it.")
-    return LLM_Inference(llm_path=llm_path, max_new_tokens=max_new_tokens,
-                         reasoning=reasoning, quantization=quantization)
+    """Route --llm_path to a backend. Thin wrapper over http_llm.build, kept as
+    a module-level name so smoke tests can swap in a stub without a server."""
+    return http_llm.build(llm_path, max_new_tokens=max_new_tokens,
+                          request_timeout=request_timeout,
+                          reasoning_max_tokens=reasoning_max_tokens,
+                          reasoning=reasoning, quantization=quantization)
 
 
 def _chunk(items, size):

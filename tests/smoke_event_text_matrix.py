@@ -15,7 +15,7 @@ prompts logged in decisions.jsonl:
       report) and downstream (approach report) messages: same cause, same
       full/partial severity, same physical spot
   T4  the section-0 commonsense block rides in the system prompt of BOTH
-      arms (verified at the open_llm._format_prompt seam -- decisions.jsonl
+      arms (verified at the http_llm._format_prompt seam -- decisions.jsonl
       stores only the user prompt -- and verified NOT to leak into any
       logged user prompt)
   T5  the event-section text is byte-identical across two seeds of the
@@ -60,7 +60,7 @@ class StubLLM:
         return [self.inference(p) for p in prompts]
 
 
-runner.LLM_Inference = StubLLM
+runner.build_llm = lambda llm_path, **kwargs: StubLLM(llm_path)
 
 SUMOCFG = "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_5816.sumocfg"
 SCEN = "dataset/llm_light/Hangzhou/4_4/scenarios"
@@ -385,29 +385,19 @@ def main():
     emit("\n### T4 - section-0 commonsense block in BOTH arms' system prompt")
     check(LLM_SYSTEM_PROMPT.count(LLM_COMMONSENSE_BLOCK) == 1,
           "T4: LLM_SYSTEM_PROMPT contains the commonsense block exactly once")
-    from models_inference.LLM.open_llm import LLM_Inference
-    seam = LLM_Inference(LLM_DEFAULT_PATH)
+    from models_inference.LLM.http_llm import HTTPChatLLM, _as_text
+    seam = HTTPChatLLM.__new__(HTTPChatLLM)
     seam._logged_first_prompt = True
-    seam.model_family = "alpaca"
-    formatted = seam._format_prompt("USER_CONTENT_SENTINEL")
+    formatted = _as_text(seam._format_prompt("USER_CONTENT_SENTINEL"))
     check(formatted.count(LLM_COMMONSENSE_BLOCK) == 1
           and "USER_CONTENT_SENTINEL" in formatted,
-          "T4: alpaca-format model input carries the block exactly once")
-    try:
-        from transformers import AutoTokenizer
-        seam.tokenizer = AutoTokenizer.from_pretrained(seam.llm_path,
-                                                       trust_remote_code=True)
-        seam.model_family = "chatml"
-        formatted = seam._format_prompt("USER_CONTENT_SENTINEL")
-        check(formatted.count(LLM_COMMONSENSE_BLOCK) == 1
-              and "USER_CONTENT_SENTINEL" in formatted,
-              "T4: chatml-format model input (default Qwen tokenizer) carries "
-              "the block exactly once")
-    except Exception as e:
-        note(f"chatml seam check skipped (tokenizer unavailable: {e})")
-    note("open_llm._format_prompt is the single entry point for every "
+          "T4: the model input carries the block exactly once")
+    note("http_llm._format_prompt is the single entry point for every "
          "inference call and takes no arm-dependent input, so the block is "
-         "identical in L1 and L2, in every scenario including S0.")
+         "identical in L1 and L2, in every scenario including S0. The assertion "
+         "is on the serialized messages, which are the exact bytes recorded as "
+         "last_formatted_prompt. The chat template itself is now applied by the "
+         "server and is no longer visible from here.")
     leaked = [
         (run_id, tl, s) for run_id in results for tl in results[run_id]
         for s, p in prompts_of(results[run_id], tl)

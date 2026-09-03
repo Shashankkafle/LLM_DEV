@@ -234,13 +234,12 @@ LLM_SYSTEM_PROMPT = (
     "traffic commonsense to solve this traffic signal control tasks. "
     + LLM_COMMONSENSE_BLOCK
 )
-# Default local model, resolved relative to the repo so the same checkout
-# works on any machine; override per-run with --llm_path. open_llm's
-# _resolve_snapshot_path descends into snapshots/<revision>/ automatically.
-_REPO_ROOT = Path(__file__).resolve().parent
-LLM_DEFAULT_PATH = str(
-    _REPO_ROOT / "models/LLMs/models--Qwen--Qwen2.5-0.5B-Instruct"
-)
+# Placeholder default: no server serves a model called "default", so a run
+# launched without --llm_path fails at preflight with a message naming what the
+# server does serve. A real path here would be machine-dependent, and --llm_path
+# is part of run identity -- two checkouts would then record two identities for
+# the same model.
+LLM_DEFAULT_PATH = "vllm:default"
 
 
 # =============================================================================

@@ -223,13 +223,14 @@ def parse_args():
                         help="Cap the LLM's thinking specifically (see runner.py). "
                              "Not part of run identity.")
     parser.add_argument("--reasoning", choices=["auto", "on", "off"],
-                        help="Switch a hybrid local model's thinking on or off "
+                        help="Switch a hybrid model's thinking on or off "
                              "(see runner.py). Part of run identity, so an "
                              "on-run never pools with an off-run.")
-    parser.add_argument("--quantization", choices=["none", "8bit", "4bit"],
-                        help="Load a local model in reduced precision (see "
-                             "runner.py). Part of run identity, so a quantized "
-                             "run never pools with a full-precision one.")
+    parser.add_argument("--quantization", type=str,
+                        help="Declare the precision the server was launched "
+                             "with (see runner.py). A label only, but part of "
+                             "run identity, so a quantized run never pools with "
+                             "a full-precision one.")
     parser.add_argument("--force", action="store_true",
                         help="Re-run every combo even if a completed run exists")
     parser.add_argument("--dry_run", action="store_true",

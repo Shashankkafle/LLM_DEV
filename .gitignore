@@ -22,3 +22,4 @@ logs/
 .env
 .env.*
 *.secrets
+.vllm_serve_cmd

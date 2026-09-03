@@ -7,7 +7,7 @@ memory use so TF does not grab all VRAM. It never raises -- a probe failure must
 take down a training run that would otherwise be fine on CPU.
 
 Call configure_tf_devices() once, early, before the agent's model is built (so
-set_memory_growth still has effect). Logging style mirrors models_inference/LLM/open_llm.py.
+set_memory_growth still has effect). Logging style mirrors models_inference/LLM/http_llm.py.
 """
 
 

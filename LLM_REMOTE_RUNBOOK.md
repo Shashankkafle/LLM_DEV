@@ -2,7 +2,8 @@
 
 The LLM grid on the base "real" (stochastic) Hangzhou routes, run on a
 **custom-fine-tuned Qwen2.5-14B** (merged model at
-`~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b`) on `cngpu-vm001`.
+`~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b`, served by vLLM as
+`qwen2.5_14b`) on `cngpu-vm001`.
 Four arms × seeds 1–3 (12 runs):
 
 | Experiment            | Blockage | Who hears the incident? | Runs |
@@ -18,7 +19,8 @@ free. Decoding is greedy (`temperature 0.0`, `do_sample False`), so run-to-run
 variation is purely the SUMO `--seed` — the same seed seam the FT/MP baselines
 use (`setup_run(..., seed=args.seed)` in `runner.py`).
 
-Assumes `cngpu-vm001` already has the repo + `uv` env from the Jul 17 LLM run.
+Assumes `cngpu-vm001` already has the repo + `uv` env. vLLM installs into a
+separate venv on first `serve_vllm.sh` — see §3.
 
 ---
 
@@ -41,17 +43,21 @@ uv sync --locked
 source .venv/bin/activate
 ```
 
-## 3. Confirm the model
+## 3. Start the vLLM server
 
-The runs point `--llm_path` at the merged fine-tuned model, wired in
-`experiments.LLM_MODEL_PATH`:
+Runs decide against a vLLM server over HTTP; nothing loads a model in-process
+any more. **vLLM lives in its own virtualenv** — `uv add vllm` into this project
+would resolve its own torch over the cu126 build pinned in `uv.lock` and break
+CUDA outright on this box's 550 driver. `serve_vllm.sh` builds that isolated env
+on first use (`VLLM_VENV` overrides where, `VLLM_PORT` overrides the port):
 
+```bash
+tmux new -s vllm
+bash serve_vllm.sh ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b qwen2.5_14b
 ```
-~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b
-```
 
-It's a merged model directory (not an HF cache folder), already present on the
-box. Confirm it has both weights and a tokenizer:
+The merged model dir still needs both weights and a tokenizer — vLLM applies the
+chat template server-side, so a missing tokenizer fails the server, not the run:
 
 ```bash
 ls ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b
@@ -59,91 +65,115 @@ ls ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b
 # files (tokenizer.json / tokenizer_config.json)
 ```
 
-If the tokenizer files are missing the load fails — copy them from the base
-Qwen2.5-14B, or re-export the merge with the tokenizer included.
+Then, in the shell that runs the grid:
+
+```bash
+export VLLM_SERVE_CMD="$(cat .vllm_serve_cmd)"   # recorded in every manifest
+export VLLM_BASE_URL=http://localhost:8000/v1    # only if not the default
+```
+
+`--llm_path` names the **served model**, never a URL: `vllm:qwen2.5_14b`. Keeping
+the endpoint in `VLLM_BASE_URL` is what lets the server move between ports
+without invalidating a grid — the URL is not part of run identity, the served
+name is. Encode the serving precision in that name
+(`--served-model-name qwen2.5_14b-awq`) and it rides into identity, the run-dir
+tag and the results' `model` column for free.
 
 > **Custom fine-tune caveat.** If it was trained on a different prompt format
 > than `configurations.LLM_SYSTEM_PROMPT` + `utils/prompt_builder`, decisions
 > may parse poorly. Watch `valid_resp_rate` in the seed-1 smoke (§5a); the
-> manifest records the exact formatted prompt for inspection.
+> manifest records the exact messages sent for inspection.
 
 > Note: the model **is** part of run identity (`experiments._identity_fields`),
 > so two models over the same config/seed/blockage combos are distinct results
 > and share a `logs/` tree safely.
 
-## 4. GPU + LLM smoke (before committing to full runs)
+> **Identity broke at the migration, deliberately.** Runs made against the
+> retired in-process backend recorded a filesystem path in `args.llm_path`;
+> these record `vllm:<served-name>`, so they do not pool and completed local runs
+> will re-run. That is honest, not a bug: the stacks differ in attention
+> implementation, KV dtype and reduction order, and the prompt itself now goes
+> through the server's chat template rather than the client's. §4b below measured
+> ~3% of decisions flipping from a mere left-padding change *on the same weights
+> in the same stack*; a stack swap moves at least that. Do not add an alias.
+
+### What the client can no longer see
+
+The chat template, the dtype and the device map are the server's business now, so
+the manifest records what it can observe instead: `llm.server.model_entry`
+(`id`, `root` — the weights behind the served name — and `max_model_len`),
+`llm.server.version` from `GET /version`, `llm.generation.extra_payload_sent`
+(what `--reasoning` actually sent), and `llm.serve_cmd` if you exported it above.
+
+## 4. Smoke it before committing to full runs
 
 ```bash
-python -c "import torch; print(torch.cuda.get_device_name(0))"
-python runner.py --test_name remote_smoke --simulation_steps 300 \
-    --llm_path ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b
+python runner.py --test_name remote_smoke --simulation_steps 300     --llm_path vllm:qwen2.5_14b
 ```
 
-Confirms the 14B loads on GPU (fp16 ≈ 28 GB, `device_map=auto`) and produces
-parseable `<signal>` decisions. Optional CPU firewall sanity (toy net, stub
-LLM, no GPU):
+Preflight runs `GET /v1/models` and `GET /version` before SUMO starts, so a dead
+server, a wrong port or a misspelled served name crashes immediately and names
+what the server *does* serve — the runner treats an inference failure as "hold
+the current phase", so a persistent fault would otherwise burn a whole run
+producing silently degraded control.
+
+Offline checks (no GPU, no server, no network):
 
 ```bash
+python tests/smoke_http_backends.py            # the vLLM backend end to end
+python tests/smoke_openrouter_backend.py       # the hosted backend
+python tests/smoke_run_identity_flags.py       # identity did not shift
 PYTHONPATH=. python tests/smoke_blockage_prompt_leakage.py
 ```
 
-## 4b. Batched inference — mechanism check + acceptance (run once, on this box)
+## 4b. Batched inference — no equivalence question any more
 
-`runner.py` batches every intersection whose green window ends on the same step
-into one `generate()` call by default — that's what gets a full run to ~6 h
-instead of ~40 h. Two separate things must hold before trusting it.
+`runner.py` still batches every intersection whose green window ends on the same
+step, but a batch is now **N independent HTTP requests** (one per intersection),
+which vLLM fuses into one continuous batch server-side. There is no shared
+padded `generate()`, so the outputs are the single-call outputs by construction.
+`tests/verify_batch_equivalence.py` — which existed to prove the left-padding was
+sound — is deleted along with the padding. `--max_batch_size` now caps
+concurrency rather than tensor width, and the runner still falls back to
+per-prompt on any batch failure.
 
-**(1) The mechanism is sound.** On order-stable arithmetic, batching is
-byte-identical to per-intersection inference — verified locally on CPU/fp32:
-`tests/verify_batch_equivalence.py` (raw text + token usage 5/5) and
-`tests/verify_batch_loop_equivalence.py` (decisions.jsonl identical, batch-size
-invariant). The GPU run of that test is a *mechanism* check, **not** a
-signal-parity pass/fail:
+`tests/verify_batch_loop_equivalence.py` still pins the loop itself (sequential
+vs batched vs capped-batch record identically, on a stub, no GPU):
 
 ```bash
-python tests/verify_batch_equivalence.py \
-    --llm_path ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b \
-    --max_new_tokens 1024
+python tests/verify_batch_loop_equivalence.py
 ```
-Require `size-1 batch == single: True`. **Expect a few `<signal>` mismatches on
-fp16** — a near-tie logit flipping a token is inherent fp16 noise (the same test
-is bit-exact on CPU/fp32), not a bug. Whether it *matters* is decided in (2).
 
-**(2) It doesn't move the results.** Run a short sequential-vs-batched pair on the
-same seed and compare the decisions and the bottom-line metrics:
+**Run the acceptance pair once on the new stack**, because the mechanism changed:
 
 ```bash
-python runner.py --simulation_steps 400 --seed 1 --sequential \
-    --llm_path ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b
-python runner.py --simulation_steps 400 --seed 1 \
-    --llm_path ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b
+python runner.py --simulation_steps 400 --seed 1 --sequential --llm_path vllm:qwen2.5_14b
+python runner.py --simulation_steps 400 --seed 1 --llm_path vllm:qwen2.5_14b
 python tests/compare_runs.py logs/<sequential_dir> logs/<batched_dir>
 ```
-Read `compare_runs.py` as: *"decisions identical before first flip"* is the clean
-fp16 sensitivity, and the **aggregate deltas** (ATT/AWT/throughput) are the
-verdict. Accept batching when those deltas are **≪ the seed-to-seed spread** —
-get that yardstick from two batched runs at different seeds (`--seed 1` vs
-`--seed 2`). **Observed on this 14B (150-step pair): ~3% of LLM-queried decisions
-flipped, benign — ATT identical, AWT within ~0.35 s, far below seed noise → batch
-the grid.**
 
-If the batched-vs-sequential deltas ever rival the seed spread, run sequentially:
-set `"sequential": true` in the experiment's `extra` (run_matrix passes it
-through) or call `runner.py --sequential` directly. Greedy decoding
-(`temperature 0.0`) keeps every run deterministic for a given seed regardless.
+The **aggregate deltas** (ATT/AWT/throughput) are the verdict; accept when they
+are ≪ the seed-to-seed spread, which you get from two batched runs at different
+seeds. For reference, the retired HF stack measured ~3% of LLM-queried decisions
+flipping with ATT identical and AWT within ~0.35 s — far below seed noise.
 
-If a wide batch OOMs, cap it with `"max_batch_size": 8` in `extra` (or
-`--max_batch_size 8`); the runner also auto-falls-back to per-prompt on any batch
-failure, so an OOM degrades instead of crashing the step.
+Greedy decoding (`temperature 0.0`) keeps a run deterministic given a seed *in
+principle*, but continuous batching varies batch composition with arrival timing,
+so a vLLM run is not bit-reproducible even against itself. Pin the server version
+(it lands in the manifest) and treat the acceptance pair, not bit-equality, as
+the standard.
+
+Time the first full run before assuming a schedule — the HF stack budgeted ~6 h
+per 3600-step run; vLLM should be well under that, but it is unmeasured here.
 
 ## 4c. Alternative: run an arm on a hosted model (OpenRouter)
 
-No GPU box required. Give `--llm_path` an `openrouter:<provider>/<model>` value
-and `runner.build_llm` swaps the local HuggingFace backend for
-`models_inference/LLM/openrouter_llm.py`, which talks to OpenRouter's
-OpenAI-compatible API over stdlib urllib (no extra dependency, nothing to
-`uv sync`). Everything downstream — prompts, parsing, batching, the decision
-records — is unchanged.
+No GPU box and no vLLM server required. Give `--llm_path` an
+`openrouter:<provider>/<model>` value and `runner.build_llm` routes to the
+OpenRouter subclass in `models_inference/LLM/http_llm.py` instead of the vLLM
+one. Both speak the same OpenAI-compatible API over stdlib urllib (no extra
+dependency, nothing to `uv sync`), and everything downstream — prompts, parsing,
+batching, the decision records — is identical.
 
 ```bash
 set +o history                 # keep the key out of ~/.bash_history
@@ -169,7 +199,7 @@ paste it into `experiments.py` or a run script.
 For a full arm, put the same string in the experiment's `extra`:
 `{"llm_path": "openrouter:google/gemma-3-27b-it"}`. No `run_matrix.py` change is
 needed, and because the model is part of run identity these results never pool
-with the local 14B's.
+with the self-hosted 14B's.
 
 ### Testing several models, one after another
 
@@ -180,10 +210,10 @@ matrix runs them sequentially, one run per model:
 python run_matrix.py --experiment llm_real_normal --seeds 1 --steps 300 \
     --llm_paths openrouter:google/gemma-3-27b-it \
                 openrouter:google/gemma-3-12b-it \
-                ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b
+                vllm:qwen2.5_14b
 ```
 
-Local paths and hosted models can be mixed freely. Because the model is part of
+Self-hosted and hosted models can be mixed freely. Because the model is part of
 run identity:
 
 * re-running the same list **skips** what is already done — adding a model to the
@@ -224,64 +254,57 @@ is about a third of that. Completion length dominates the spread. Avoid
 nothing but are rate-limited, which collides with the concurrent batch: fine for
 a smoke run, risky for a full arm. Shake out with `--simulation_steps 300` first.
 
-## 4d. Fitting a model that's too big — `--quantization`
+## 4d. Fitting a model that's too big — quantization is the server's job
 
-`--quantization {none,8bit,4bit}` loads a local model through bitsandbytes so one
-larger than the GPU still fits. The A40 has ~44.7 GB free, which rules out fp16
-for anything past ~20 B params:
+`--quantization` no longer loads anything: the server owns its precision. Launch
+vLLM with the scheme you want and *declare* it, so identity keeps the results
+apart. The A40 has ~44.7 GB free, which rules out fp16 past ~20 B params:
 
-| Model | fp16 | 8bit | 4bit |
+| Model | fp16 | 8-bit | 4-bit |
 |---|---|---|---|
 | Qwen2.5-14B (fine-tuned) | ~28 GB ✅ | — | — |
 | Gemma 4 26B A4B | ~50 GB ❌ | ~25 GB ✅ | ~13 GB ✅ |
 | Gemma 4 31B | ~61 GB ❌ | ~31 GB ✅ | ~17 GB ✅ |
 
 A Mixture-of-Experts model gets **no** memory relief from being sparse: Gemma 4
-26B A4B activates only 3.8 B params per token but keeps all 128 experts resident.
-Sparsity buys speed, not capacity. Without quantization `device_map="auto"` spills
-to CPU and streams expert weights over PCIe every token — days per seed, not hours.
-
-Quantization is part of run identity (`experiments._identity_fields`), so an 8bit
-run never pools with a full-precision one, `build_results.py` gives it its own
-row, and the run dir is tagged (`..._gemma-4-26B-A4B-it_think-off_8bit`). It is
-recorded twice in `run_manifest.json`: under `args` (what was asked for, and what
-skip/reuse matches on) and under `llm` (what the backend did, beside `torch_dtype`
-and `device_map`). Default `none` keys identically to runs predating the flag, so
-nothing already completed is invalidated.
-
-`--quantization` is local-only; the OpenRouter backend warns and ignores it, since
-the hosted server owns the precision it serves. `bitsandbytes` is a Linux-marked
-dependency in `pyproject.toml` — it arrives via `uv sync --locked`. **Never
-`uv pip install`** it or anything else here: that resolves outside the lock and
-will pull PyPI's CUDA-13 torch over the pinned cu126 build, which breaks CUDA
-outright on this box's 550 driver.
-
-Offline check of the whole flag (no GPU, no weights):
+26B A4B activates only 3.8 B params per token but keeps all 128 experts
+resident. Sparsity buys speed, not capacity.
 
 ```bash
-python tests/smoke_local_quantization.py
+bash serve_vllm.sh google/gemma-4-26B-A4B-it gemma-4-26B-A4B-it-awq     --quantization awq --max-model-len 8192
+python run_matrix.py --experiment llm_real_normal --seeds 1 2 3     --llm_paths vllm:gemma-4-26B-A4B-it-awq --reasoning off
 ```
+
+Two ways to keep an AWQ-served run from pooling with an fp16-served one, and you
+want the first:
+
+1. **Encode it in the served name** (`-awq` above). It then rides in `--llm_path`,
+   which is identity, the run-dir tag *and* the results' `model` column.
+2. `--quantization awq` as a bare label. It is part of identity, but it is
+   **unverifiable** — `/v1/models` does not report the scheme, so nothing checks
+   that it is true. It exists as the backstop for when someone forgets (1).
+
+`--quantization` is warned-and-ignored on the OpenRouter arm, which owns the
+precision it serves.
 
 ### Gemma 4 specifics
 
-- Use an **`-it`** repo. The base `google/gemma-4-26B-A4B` ships no chat template,
-  and `_format_prompt` then falls back to Alpaca — wrong format *and* a model
-  never trained to follow instructions.
-- `gemma-4-12B-it` (the "Unified" encoder-free variant) **will not load** on
-  transformers 5.9.0: its `gemma4_unified` model type is unregistered. The 31B,
-  26B A4B and E4B all declare plain `gemma4` and work.
-- Run with **`--reasoning off`**. Gemma 4 defaults to thinking on, reasoning draws
-  from the same `LLM_MAX_NEW_TOKENS` budget, and a long think truncates before the
-  `<signal>` — an empty answer the runner can only turn into a held phase.
-- **`--reasoning on` is not usable on this family yet.** Gemma delimits reasoning
-  as `<|channel>thought … <channel|>`, but `split_reasoning` only recognizes
-  `<think>`/`</think>`, so chain-of-thought would flow into the signal parser. A
-  thinking arm needs those delimiters added first.
-
-```bash
-python run_matrix.py --experiment llm_real_normal --seeds 1 2 3 \
-    --llm_paths google/gemma-4-26B-A4B-it --reasoning off --quantization 8bit
-```
+- Use an **`-it`** repo. The base `google/gemma-4-26B-A4B` ships no chat
+  template, and the server has nothing to apply.
+- Run with **`--reasoning off`**. Gemma 4 defaults to thinking on, reasoning
+  draws from the same `--max_new_tokens` budget, and a long think truncates
+  before the `<signal>` — an empty answer the runner can only turn into a held
+  phase. Startup now *proves* the flag took effect: two free `POST /tokenize`
+  calls render the same messages with `enable_thinking` true and false, and
+  identical token counts mean the template ignores the variable, which raises
+  rather than thinking anyway.
+- **`--reasoning on` is now usable on this family** — the old blocker was that
+  Gemma delimits reasoning as `<|channel>thought … <channel|>` while the client
+  only knew `<think>`. Launch the server with the matching `--reasoning-parser`
+  and it returns `reasoning_content` separately, leaving clean `content` for the
+  signal parser. If you forget, the client warns on the first 3 decisions that a
+  reasoning marker survived into the answer — never silently parse a chain of
+  thought.
 
 ## 5. Run in order — seed 1 first, verify, then the rest
 

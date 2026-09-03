@@ -13,9 +13,6 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-QWEN_REPO="Qwen/Qwen2.5-0.5B-Instruct"
-QWEN_REVISION="7ae557604adf67be50417f59c2c2f167def9a775"
-
 step() { printf '\n=== %s ===\n' "$*"; }
 
 step "uv"
@@ -37,18 +34,19 @@ else
     ON_WINDOWS=1
 fi
 
-step "default LLM weights ($QWEN_REPO @ ${QWEN_REVISION:0:12})"
-# snapshot_download API rather than the `hf` CLI: the API surface is stable
-# across hub versions. Other models: same call with a different repo id / no
-# revision pin, then pass the path via --llm_path at run time.
-QWEN_REPO="$QWEN_REPO" QWEN_REVISION="$QWEN_REVISION" "$VENV_PY" -c "
-import os
-from huggingface_hub import snapshot_download
-path = snapshot_download(os.environ['QWEN_REPO'],
-                         revision=os.environ['QWEN_REVISION'],
-                         cache_dir='models/LLMs')
-print('model at:', path)
-"
+step "LLM serving (vLLM, separate environment)"
+# No weights are downloaded here any more: the in-process HuggingFace backend
+# was retired, and runs decide against a vLLM server over HTTP. vLLM resolves
+# its own torch, so it must NOT be installed into this project's environment --
+# it would pull PyPI's CUDA-13 wheel over the cu126 build pinned in uv.lock and
+# break CUDA on driver 550. serve_vllm.sh builds an isolated venv for it:
+#
+#   bash serve_vllm.sh <model-path-or-repo-id> qwen2.5_14b   # in its own shell
+#   export VLLM_SERVE_CMD="$(cat .vllm_serve_cmd)"
+#   python runner.py --llm_path vllm:qwen2.5_14b
+#
+# Set VLLM_BASE_URL if the server is not on http://localhost:8000/v1.
+echo "skipped (see serve_vllm.sh -- vLLM installs into its own venv)"
 
 step "verify: SUMO"
 "$SUMO_BIN" --version | head -n 2

@@ -126,7 +126,7 @@ EXISTING_TEST_COVERAGE = [
      "COVERED at template level; PARTIAL at run level",
      "test_prompt_builder.test_system_prompt_is_pinned and "
      "test_commonsense_block_is_pinned pin both strings verbatim. "
-     "smoke_event_text_matrix T4 checks the open_llm._format_prompt seam and "
+     "smoke_event_text_matrix T4 checks the http_llm._format_prompt seam and "
      "that the block never leaks into a logged user prompt. Neither reads "
      "back what a real run recorded in run_manifest.json (llm.system_prompt / "
      "llm.example_formatted_prompt)."),

@@ -1,7 +1,7 @@
 """End-to-end wiring check for runner.py --blockage_scenario with a stub LLM.
 
 Runs the real main() (real SumoEnv, PhaseHandler, MetricsRecorder, blockage
-manager) with LLM_Inference replaced by a canned-answer stub, then inspects the
+manager) with the LLM backend replaced by a canned-answer stub, then inspects the
 run directory for the blockage traces: section in in-window prompts only,
 blocked flags in decisions.jsonl, blocked_lanes in step summaries, scenario in
 replay meta. Writes a normal run dir under logs/ (delete it afterwards).
@@ -21,7 +21,7 @@ import runner
 
 
 class StubLLM:
-    def __init__(self, llm_path):
+    def __init__(self, llm_path, **kwargs):
         pass
 
     def initialize_llm(self):
@@ -34,7 +34,7 @@ class StubLLM:
         return [self.inference(p) for p in prompts]
 
 
-runner.LLM_Inference = StubLLM
+runner.build_llm = lambda llm_path, **kwargs: StubLLM(llm_path)
 
 args = argparse.Namespace(
     test_name="blockage_wiring_smoke",
@@ -48,6 +48,16 @@ args = argparse.Namespace(
     hide_blockage_info=False,
     blockage_info_scope="both",
     intersection_config="single_intersection",
+    sequential=False,
+    max_batch_size=0,
+    # The LLM-backend flags runner.main reads. Defaults only -- the stub
+    # never loads a model -- but they must exist or main() raises.
+    max_new_tokens=None,
+    request_timeout=None,
+    reasoning_max_tokens=None,
+    reasoning="auto",
+    quantization="none",
+    logs_dir=None,
 )
 runner.main(args)
 

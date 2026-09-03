@@ -21,7 +21,7 @@ from itertools import product
 from pathlib import Path
 
 from configurations import LLM_DEFAULT_PATH
-from models_inference.LLM.openrouter_llm import OPENROUTER_PREFIX
+from models_inference.LLM.http_llm import strip_scheme
 
 # --- aliases -----------------------------------------------------------------
 
@@ -63,16 +63,16 @@ SHORT_TOKENS = {
 # --- experiments -------------------------------------------------------------
 
 # The one model the whole LLM grid runs on: a custom-fine-tuned, LoRA-merged
-# Qwen2.5-14B living outside the repo on the GPU box. runner.py's --llm_path
-# takes this directory directly (a merged model dir, not an HF cache folder, so
-# there is no snapshots/<hash>/ to descend into); open_llm expands the leading
-# ~ at load time. fp16 (~28 GB) fits the A40.
+# Qwen2.5-14B, served by vLLM on the GPU box. This is the *served* name, not a
+# path -- serve_vllm.sh maps it onto the weights with --served-model-name, and
+# the endpoint comes from VLLM_BASE_URL. Keeping the URL out of here is what
+# lets the server move between ports without invalidating the grid.
 #
 # The model IS part of a run's identity (see _identity_fields), so two models
 # over the same config/seed/blockage combos are distinct results and share a
 # logs tree safely. An "openrouter:<provider>/<model>" value here runs the arm
 # against a hosted model instead (see runner.build_llm).
-LLM_MODEL_PATH = "~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b"
+LLM_MODEL_PATH = "vllm:qwen2.5_14b"
 
 EXPERIMENTS = {
     # The blockage lever sweep (C1/C2/C3) on MaxPressure -- cheap, no GPU.
@@ -352,10 +352,8 @@ def _check_aliases(controllers, configs, blockages):
 def model_token(llm_path):
     """Short, filesystem-safe tag for a model, for run-dir names and report
     columns: 'openrouter:google/gemma-3-27b-it' -> 'gemma-3-27b-it',
-    '~/ft_models/merged/qwen2.5_14b' -> 'qwen2.5_14b'."""
-    name = llm_path or ""
-    if name.startswith(OPENROUTER_PREFIX):
-        name = name[len(OPENROUTER_PREFIX):]
+    'vllm:qwen2.5_14b' -> 'qwen2.5_14b'."""
+    name = strip_scheme(llm_path or "")
     tail = re.split(r"[\\/]", name.rstrip("\\/"))[-1]
     return re.sub(r"[^A-Za-z0-9._-]", "_", tail)
 

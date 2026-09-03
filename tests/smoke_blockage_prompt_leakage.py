@@ -120,7 +120,7 @@ class StubLLM:
         return [self.inference(p) for p in prompts]
 
 
-runner.LLM_Inference = StubLLM
+runner.build_llm = lambda llm_path, **kwargs: StubLLM(llm_path)
 
 
 def run_once(test_name, sumocfg, scenario, hide_info):

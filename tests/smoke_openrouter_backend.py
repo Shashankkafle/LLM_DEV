@@ -1,4 +1,4 @@
-"""Offline checks for the OpenRouter backend (models_inference/LLM/openrouter_llm).
+"""Offline checks for the OpenRouter backend (models_inference/LLM/http_llm).
 
 Runs the real client against a local stand-in server via OPENROUTER_BASE_URL, so
 the request shape, retry policy, batch ordering and error taxonomy are all
@@ -91,8 +91,8 @@ class FakeOpenRouter:
 fake = FakeOpenRouter()
 os.environ["OPENROUTER_BASE_URL"] = fake.base_url
 
-from models_inference.LLM import openrouter_llm as mod  # noqa: E402
-from models_inference.LLM.openrouter_llm import OpenRouter_Inference  # noqa: E402
+from models_inference.LLM import http_llm as mod  # noqa: E402
+from models_inference.LLM.http_llm import OpenRouterLLM  # noqa: E402
 import runner  # noqa: E402
 
 MODEL = "openrouter:google/gemma-3-27b-it"
@@ -115,7 +115,7 @@ def fresh(script=None, **kwargs):
     """A ready-to-use client, with the fake reset to `script`."""
     fake.script = script or [(200, fake._completion("<signal>ETWT</signal>"))]
     fake.requests.clear()
-    llm = OpenRouter_Inference(MODEL, **kwargs)
+    llm = OpenRouterLLM(MODEL, **kwargs)
     llm.initialize_llm()
     fake.requests.clear()  # drop the preflight
     return llm
@@ -123,16 +123,20 @@ def fresh(script=None, **kwargs):
 
 # --- 1. the runner's factory picks this backend up ---------------------------
 
-check(isinstance(runner.build_llm(MODEL), OpenRouter_Inference),
+check(isinstance(runner.build_llm(MODEL), OpenRouterLLM),
       "runner.build_llm routes an openrouter: path to this backend")
-check(not isinstance(runner.build_llm("models/LLMs/whatever"), OpenRouter_Inference),
-      "runner.build_llm leaves an ordinary path on the local backend")
+try:
+    runner.build_llm("models/LLMs/whatever")
+    check(False, "an unprefixed path is rejected now the local backend is retired")
+except ValueError as exc:
+    check("vllm serve" in str(exc),
+          "an unprefixed path is rejected now the local backend is retired")
 
 # --- 2. a missing API key stops the run immediately --------------------------
 # (the key is already unset -- see REAL_KEY above)
 
 try:
-    OpenRouter_Inference(MODEL).initialize_llm()
+    OpenRouterLLM(MODEL).initialize_llm()
     check(False, "a missing OPENROUTER_API_KEY aborts in initialize_llm()")
 except RuntimeError as exc:
     check("OPENROUTER_API_KEY" in str(exc),
@@ -142,7 +146,7 @@ os.environ["OPENROUTER_API_KEY"] = TEST_KEY
 # --- 3. a malformed --llm_path is rejected at construction -------------------
 
 try:
-    OpenRouter_Inference("openrouter:")
+    OpenRouterLLM("openrouter:")
     check(False, "an empty model in --llm_path is rejected")
 except ValueError:
     check(True, "an empty model in --llm_path is rejected")
@@ -151,7 +155,7 @@ except ValueError:
 
 fake.script = [(200, fake._completion("pong"))]
 fake.requests.clear()
-llm = OpenRouter_Inference(MODEL)
+llm = OpenRouterLLM(MODEL)
 llm.initialize_llm()
 check(len(fake.requests) == 1, "initialize_llm() preflights with one request")
 check(fake.requests[0]["max_tokens"] == 1,
