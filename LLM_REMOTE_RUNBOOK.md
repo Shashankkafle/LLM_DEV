@@ -41,6 +41,41 @@ uv sync --locked
 source .venv/bin/activate
 ```
 
+### 2b. The second env — Gemma 4 12B Unified only
+
+`google/gemma-4-12B-it` declares `model_type: "gemma4_unified"` (the encoder-free
+variant). Transformers **5.9.0**, which this repo pins, has no such entry, so
+`AutoConfig` dies with `KeyError: 'gemma4_unified'`. The model type landed
+upstream in **5.10.0**, so the fix is only a version bump — but bumping the main
+env would re-base the environment the Qwen-14B campaign was produced in. So there
+is a second, parallel env in the same checkout:
+
+```bash
+uv sync --project envs/gemma4 --locked
+source envs/gemma4/.venv/bin/activate     # its own sumo binary goes on PATH
+```
+
+`envs/gemma4/pyproject.toml` mirrors the root one dependency-for-dependency
+(same SUMO 1.27.1, same torch cu126) and changes exactly one line:
+`transformers==5.16.1`. It is Linux-only — the 12B needs the GPU box.
+
+> **The rule: Gemma runs launch from `envs/gemma4/.venv`, everything else from
+> `.venv`.** Both venvs share this one working tree, so it is the activated env,
+> not the code, that decides which transformers you get. Mixing them is the one
+> way to get a result that looks fine and isn't.
+
+The loading difference is handled in `models_inference/LLM/open_llm.py` and keyed
+off `config.model_type`, so nothing needs a flag: Gemma 4 loads through
+`AutoModelForMultimodalLM` (its architecture is
+`Gemma4UnifiedForConditionalGeneration`; we still only ever send text) in
+**bfloat16** rather than the fp16 default, and `split_reasoning` also
+understands Gemma's thought channel so chain-of-thought can never reach the
+`<signal>` parser. 12B in bf16 is ≈ 24 GB — it fits the A40 without
+`--quantization`.
+
+The model is part of run identity, so a Gemma arm is just another `--llm_path`
+and can never pool with the Qwen results.
+
 ## 3. Confirm the model
 
 The runs point `--llm_path` at the merged fine-tuned model, wired in
@@ -277,6 +312,10 @@ python tests/smoke_local_quantization.py
   as `<|channel>thought … <channel|>`, but `split_reasoning` only recognizes
   `<think>`/`</think>`, so chain-of-thought would flow into the signal parser. A
   thinking arm needs those delimiters added first.
+- A **local** weights directory must be given as an absolute or `~`-rooted path.
+  The matrix runs `runner.py` as a subprocess, so a path relative to your shell
+  will not resolve — and an unresolvable path is then read as a Hub repo id.
+  `build_combos` now rejects this up front rather than at model-load time.
 
 ```bash
 python run_matrix.py --experiment llm_real_normal --seeds 1 2 3 \

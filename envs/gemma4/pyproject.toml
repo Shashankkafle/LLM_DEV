@@ -1,0 +1,67 @@
+[project]
+name = "llmtsc-sumo-gemma4"
+version = "0.1.0"
+description = "Second environment for LLMTSC_SUMO: same simulator stack, newer transformers, so Gemma 4 12B Unified loads"
+requires-python = "==3.11.*"
+
+# Mirrors the root pyproject.toml dependency-for-dependency, with ONE change:
+# transformers moves forward. The root env is pinned at transformers 5.9.0,
+# which has no `gemma4_unified` entry in CONFIG_MAPPING_NAMES -- AutoConfig on
+# google/gemma-4-12B-it raises KeyError there. The model type landed upstream in
+# transformers 5.10.0 (src/transformers/models/gemma4_unified/), so this is a
+# version problem and nothing more: no trust_remote_code, no source build.
+#
+# It is a separate env rather than a bump in place because transformers 5.9.0 is
+# the environment the finished Qwen2.5-14B hzreal campaign was produced in;
+# moving it would silently re-base those validated arms.
+dependencies = [
+    "eclipse-sumo==1.27.1",
+    "traci==1.27.1",
+    "sumolib==1.27.1",
+    "torch==2.12.0",
+    "transformers==5.16.1",
+    "accelerate>=1.13.0",
+    "huggingface-hub>=1.13.0",
+    "click>=8.1",
+    "hf-xet>=1.5.0",
+    "numpy>=2.4.6",
+    # --quantization (runner.py): loads a model too big for the GPU in 8/4-bit.
+    # Linux only -- it needs a CUDA build, and the Windows torch here is CPU.
+    "bitsandbytes>=0.48.0 ; sys_platform == 'linux'",
+    "tensorflow-cpu==2.21.0",
+    "tf-keras==2.21.0",
+]
+
+[dependency-groups]
+analysis = [
+    "pandas>=3.0.3",
+    "matplotlib>=3.11.0",
+    "plotly>=6.8.0",
+    "bokeh>=3.9.1",
+    "openpyxl>=3.1.5",
+]
+
+[tool.uv]
+default-groups = ["analysis"]
+# Linux only: this env exists to run the 12B on the GPU box (cngpu-vm001). The
+# root env stays the one that resolves on Windows.
+environments = ["sys_platform == 'linux'"]
+# Same known-good ML core as the root env, minus the three packages transformers
+# 5.16 needs newer versions of. As at the root, these only bite when RE-LOCKING.
+constraint-dependencies = [
+    "accelerate==1.13.0",
+    "huggingface-hub==1.13.0",
+    "hf-xet==1.5.0",
+    "numpy==2.4.6",
+    "keras==3.14.1",
+]
+
+# torch comes from PyTorch's own index, never PyPI (whose default Linux wheel is
+# a CUDA-13 build that breaks on drivers < 580).
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

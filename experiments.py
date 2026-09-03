@@ -328,6 +328,8 @@ def expand_experiment(name, overrides=None):
             f"llm_paths was given but experiment '{name}' runs {controllers}; "
             "only the 'llm' controller takes a model.")
 
+    _check_llm_paths(llm_paths)
+
     _check_aliases(controllers, configs, blockages)
     combos = []
     for controller, config_alias, seed, blk in product(
@@ -347,6 +349,42 @@ def _check_aliases(controllers, configs, blockages):
                + [b for b in blockages if b not in BLOCKAGES])
     if unknown:
         raise KeyError(f"Unknown alias(es): {unknown}")
+
+
+def _looks_like_local_path(llm_path):
+    """A HuggingFace repo id is exactly 'namespace/name'. Anything with a
+    backslash, a leading ~ / . / separator, or more than one '/' is meant as a
+    filesystem path."""
+    return ("\\" in llm_path
+            or llm_path.startswith(("~", ".", "/"))
+            or llm_path.count("/") > 1)
+
+
+def _check_llm_paths(llm_paths):
+    """Reject an unusable --llm_paths value before any run starts.
+
+    Without this the bad value travels all the way into from_pretrained, which
+    treats an unresolvable path as a Hub repo id -- so a mistyped local path
+    surfaces as an opaque HFValidationError, once per combo, after each run has
+    already booted CUDA.
+    """
+    for llm_path in llm_paths or []:
+        # The hosted server owns which model names it serves.
+        if llm_path.startswith(OPENROUTER_PREFIX):
+            continue
+        if _looks_like_local_path(llm_path):
+            resolved = Path(llm_path).expanduser()
+            if not resolved.is_dir():
+                raise ValueError(
+                    f"--llm_path {llm_path!r} is not a directory "
+                    f"(looked in {resolved.resolve()}). Local models need an "
+                    "absolute or ~-rooted path: the matrix runs runner.py as a "
+                    "subprocess, so a path relative to your shell will not "
+                    "resolve.")
+        elif llm_path.count("/") != 1:
+            raise ValueError(
+                f"--llm_path {llm_path!r} is neither a local directory nor a "
+                "HuggingFace repo id, which must be 'namespace/name'.")
 
 
 def model_token(llm_path):

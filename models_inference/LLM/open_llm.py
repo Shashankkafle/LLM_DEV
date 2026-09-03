@@ -1,7 +1,13 @@
 import os
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    AutoModelForMultimodalLM,
+    BitsAndBytesConfig,
+)
 
 from configurations import (
     LLM_MAX_NEW_TOKENS,
@@ -14,6 +20,23 @@ from configurations import (
 THINK_OPEN = "<think>"
 THINK_CLOSE = "</think>"
 
+# Gemma 4 does not use <think>: its chain of thought comes back in a "thought"
+# channel instead. The pair is emitted even when thinking is off (with nothing
+# between the tags), so the split has to handle an empty block too.
+GEMMA4_THINK_OPEN = "<|channel>thought"
+GEMMA4_THINK_CLOSE = "<channel|>"
+
+# Tried in order; the first family whose tags appear wins.
+REASONING_DELIMITERS = (
+    (THINK_OPEN, THINK_CLOSE),
+    (GEMMA4_THINK_OPEN, GEMMA4_THINK_CLOSE),
+)
+
+# Gemma 4 Unified's config is a composite (text/vision/audio sub-configs) and its
+# architecture is Gemma4UnifiedForConditionalGeneration, so it loads through a
+# different auto class than a plain causal LM -- see _model_class.
+GEMMA4_UNIFIED_MODEL_TYPE = "gemma4_unified"
+
 # The chat-template variable a hybrid model exposes to switch thinking on or
 # off. Different families spell it differently; initialize_llm picks whichever
 # one the loaded template actually references.
@@ -25,22 +48,25 @@ QUANTIZATION_CHOICES = ("none", "8bit", "4bit")
 def split_reasoning(text):
     """Split a completion into (reasoning, answer).
 
-    A hybrid model emits its chain of thought inline as <think>...</think>
-    before the answer. That block must not reach the signal parser -- reasoning
-    text names phases constantly, so a regex over it would pick a phase the
-    model rejected. Returns (None, text) when there is no block.
+    A hybrid model emits its chain of thought inline before the answer -- as
+    <think>...</think>, or in Gemma 4's thought channel. That block must not
+    reach the signal parser -- reasoning text names phases constantly, so a regex
+    over it would pick a phase the model rejected. Returns (None, text) when
+    there is no block.
     """
-    if THINK_CLOSE in text:
-        reasoning, _, answer = text.partition(THINK_CLOSE)
-        # Some templates pre-open <think> in the prompt, so only the closing
-        # tag comes back from the model.
-        reasoning = reasoning.split(THINK_OPEN, 1)[-1]
-        return reasoning.strip(), answer.strip()
-    if THINK_OPEN in text:
-        # Truncated: the budget ran out mid-thought. The empty answer becomes a
-        # parse error downstream, which holds the phase -- the honest outcome.
-        answer, _, reasoning = text.partition(THINK_OPEN)
-        return reasoning.strip(), answer.strip()
+    for open_tag, close_tag in REASONING_DELIMITERS:
+        if close_tag in text:
+            reasoning, _, answer = text.partition(close_tag)
+            # Some templates pre-open the block in the prompt, so only the
+            # closing tag comes back from the model.
+            reasoning = reasoning.split(open_tag, 1)[-1]
+            return reasoning.strip(), answer.strip()
+        if open_tag in text:
+            # Truncated: the budget ran out mid-thought. The empty answer becomes
+            # a parse error downstream, which holds the phase -- the honest
+            # outcome.
+            answer, _, reasoning = text.partition(open_tag)
+            return reasoning.strip(), answer.strip()
     return None, text
 
 
@@ -92,11 +118,21 @@ class LLM_Inference:
                 return os.path.join(snapshots_dir, hashes[0])
         return llm_path
 
-    def initialize_llm(self, torch_dtype=torch.float16, device_map="auto"):
+    def initialize_llm(self, torch_dtype=None, device_map="auto"):
+        """Load the tokenizer and the model. torch_dtype=None picks the dtype
+        the model family needs (see _default_dtype); pass one to override."""
         if torch.cuda.is_available():
             print(f"[Info] CUDA available: {torch.cuda.get_device_name(0)}")
         else:
             print("[Warning] CUDA not available, running on CPU")
+
+        # Read the config before the weights: which auto class and which dtype to
+        # load with are both decided by model_type.
+        config = AutoConfig.from_pretrained(self.llm_path, trust_remote_code=True)
+        model_class = self._model_class(config)
+        dtype = torch_dtype or self._default_dtype(config)
+        print(f"[Info] Loading {config.model_type} with "
+              f"{model_class.__name__} in {dtype}.")
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.llm_path, trust_remote_code=True)
         # Batched generation needs left-padding for a causal LM (real tokens
@@ -105,9 +141,9 @@ class LLM_Inference:
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model = AutoModelForCausalLM.from_pretrained(
+        self.model = model_class.from_pretrained(
             self.llm_path,
-            torch_dtype=torch_dtype,
+            dtype=dtype,
             device_map=device_map,
             trust_remote_code=True,
             **self._quantization_kwargs()
@@ -120,6 +156,31 @@ class LLM_Inference:
         self.model_family = self._detect_model_family()
         print(f"[Info] Auto-detected model family: {self.model_family}")
         self.thinking_var = self._resolve_thinking_var()
+
+    @staticmethod
+    def _model_class(config):
+        """The auto class that can load this checkpoint.
+
+        Gemma 4 Unified is encoder-free but still a multimodal model: its
+        architecture is Gemma4UnifiedForConditionalGeneration, which the
+        causal-LM mapping does not resolve. We only ever send it text, so
+        AutoTokenizer and the text-only generate() path below are unchanged.
+
+        Reaching this branch at all needs transformers >= 5.10, which is the
+        whole reason Gemma 4 runs from the second env (envs/gemma4/) -- 5.9.0,
+        pinned in the main .venv, has no gemma4_unified at all.
+        """
+        if getattr(config, "model_type", "") == GEMMA4_UNIFIED_MODEL_TYPE:
+            return AutoModelForMultimodalLM
+        return AutoModelForCausalLM
+
+    @staticmethod
+    def _default_dtype(config):
+        """fp16, except for Gemma -- it ships bf16 and its activations overflow
+        fp16's range, which shows up as garbage or NaNs rather than a crash."""
+        if getattr(config, "model_type", "").startswith("gemma"):
+            return torch.bfloat16
+        return torch.float16
 
     def _quantization_kwargs(self):
         """Load in reduced precision so a model too big for the GPU still fits.
