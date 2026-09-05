@@ -18,6 +18,7 @@ from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
 from utils.blockage_manager import BlockageManager, load_scenario
+from utils import llm_activity
 from utils.run_manifest import add_sumo_runtime, save_manifest, finalize_manifest
 from configurations import (
     DEFAULT_START_PHASE,
@@ -57,10 +58,21 @@ def create_run_dirs(test_name, run_group=None, logs_dir=None):
     base = Path(logs_dir or LOGS_DIR_NAME)
     if run_group:
         base = base / run_group
-    records_dir = base / f"{test_name}_{timestamp}"
-    phase_sequence_dir = records_dir / PHASE_SEQUENCES_DIR_NAME
-    phase_sequence_dir.mkdir(parents=True, exist_ok=True)
-    return records_dir, phase_sequence_dir
+    # The timestamp has one-second resolution, so two runs of the same name
+    # launched together (a parallel sweep) would otherwise share a directory
+    # and interleave their decision logs. exist_ok=False makes the mkdir an
+    # atomic claim; on a collision, take the next suffix.
+    base.mkdir(parents=True, exist_ok=True)
+    for suffix in ("", *(f"_{i}" for i in range(2, 100))):
+        records_dir = base / f"{test_name}_{timestamp}{suffix}"
+        try:
+            records_dir.mkdir(exist_ok=False)
+        except FileExistsError:
+            continue
+        phase_sequence_dir = records_dir / PHASE_SEQUENCES_DIR_NAME
+        phase_sequence_dir.mkdir()
+        return records_dir, phase_sequence_dir
+    raise RuntimeError(f"Could not claim a run directory under {base}")
 
 
 class RunContext:
@@ -131,6 +143,7 @@ def _close_and_summarize(ctx, status):
         summary = ctx.recorder.save_final_summary()
     finally:
         finalize_manifest(ctx.records_dir, status)
+        llm_activity.close()
     return summary
 
 
@@ -151,6 +164,7 @@ def run_control_loop(ctx, simulation_steps, decide):
         for step in range(simulation_steps):
             ctx.env.step()
             ctx.recorder.record_step_summary(step)
+            llm_activity.set_step(step)
             for intersection_id, handler in ctx.handlers.items():
                 handler.step()
                 if handler.switch_phase:
@@ -188,6 +202,7 @@ def run_control_loop_batched(ctx, simulation_steps, decide_batch):
         for step in range(simulation_steps):
             ctx.env.step()
             ctx.recorder.record_step_summary(step)
+            llm_activity.set_step(step)
             pending = []
             for intersection_id, handler in ctx.handlers.items():
                 handler.step()

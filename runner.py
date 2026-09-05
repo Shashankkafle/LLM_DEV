@@ -13,6 +13,7 @@ from models_inference.LLM import http_llm
 from runner_common import (
     setup_run, run_control_loop, run_control_loop_batched, build_blockage_manager,
 )
+from utils import llm_activity
 from utils.prompt_builder import get_prompt
 from utils.run_manifest import build_manifest, save_manifest
 from configurations import (
@@ -212,9 +213,6 @@ def main(args):
         "blockage_scenario": args.blockage_scenario,
         "hide_blockage_info": args.hide_blockage_info,
         "blockage_info_scope": args.blockage_info_scope,
-        # Recorded so final_summary consumers can tell batched runs apart:
-        # under batching, a decision's inference_latency_ms is the shared batch
-        # wall-time, not a per-call measurement.
         "batched": not getattr(args, "sequential", False),
         "max_batch_size": getattr(args, "max_batch_size", 0),
     }
@@ -226,6 +224,13 @@ def main(args):
                     use_gui=args.use_gui, seed=args.seed, verbose_metrics=True,
                     blockage_manager=blockage_manager, manifest=manifest,
                     run_group=args.run_group, logs_dir=args.logs_dir)
+    llm_activity.start(ctx.records_dir, args.logs_dir, {
+        "experiment": args.run_group,
+        "slug": args.test_name,
+        "model": getattr(llm, "model", None),
+        "base_url": getattr(llm, "base_url", None),
+        "sim_steps_total": args.simulation_steps,
+    })
 
     def capture_example_formatted_prompt():
         """Store the first fully-templated prompt (system prompt + chat
@@ -390,10 +395,13 @@ def main(args):
                 raise ValueError(
                     f"inference_batch returned {len(outputs)} outputs / "
                     f"{len(usages)} usages for {len(prompts)} prompts")
-            latency_ms = (time.time() - start_time) * 1000
+            chunk_ms = (time.time() - start_time) * 1000
             capture_example_formatted_prompt()
+            # The backend times each request itself; the chunk's wall clock is
+            # only the fallback for a stub backend that reports no usage.
             return [{"output": o, "usage": u, "reasoning": r,
-                     "latency_ms": latency_ms, "error": None}
+                     "latency_ms": (u or {}).get("latency_ms", chunk_ms),
+                     "error": None}
                     for o, u, r in zip(outputs, usages, reasonings)]
         except Exception as exc:
             print(f"[Warning] Batched inference failed ({exc!r}); falling back "
@@ -404,9 +412,6 @@ def main(args):
         """Batched driver: every intersection switching this step. The non-empty
         prompts run as batched inference (chunked by --max_batch_size); empty
         intersections never reach the model. Returns {intersection_id: phase}.
-
-        Each queried decision records its chunk's shared wall-clock as
-        inference_latency_ms (the calls ran together), flagged via run_meta.
         """
         reqs = [prepare_decision(iid, handler) for iid, handler in pending]
         query_reqs = [r for r in reqs if not r["empty"]]

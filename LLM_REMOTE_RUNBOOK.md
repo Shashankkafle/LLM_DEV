@@ -6,12 +6,12 @@ The LLM grid on the base "real" (stochastic) Hangzhou routes, run on a
 `qwen2.5_14b`) on `cngpu-vm001`.
 Four arms × seeds 1–3 (12 runs):
 
-| Experiment            | Blockage | Who hears the incident? | Runs |
-|-----------------------|----------|-------------------------|------|
-| `llm_real_normal`     | none     | —                       | s1 s2 s3 |
-| `llm_real_c3_text`    | C3       | both intersections (`2_3` approach + `2_4` exit) | s1 s2 s3 |
-| `llm_real_c3_notext`  | C3       | neither (`--hide_blockage_info`) | s1 s2 s3 |
-| `llm_real_c3_approach_only` | C3 | only downstream `2_3`; withheld from upstream `2_4` (`--blockage_info_scope approach`) | s1 s2 s3 |
+| Experiment                    | Blockage | Who hears the incident?                                                                     | Runs     |
+| ----------------------------- | -------- | ------------------------------------------------------------------------------------------- | -------- |
+| `llm_real_normal`           | none     | —                                                                                          | s1 s2 s3 |
+| `llm_real_c3_text`          | C3       | both intersections (`2_3` approach + `2_4` exit)                                        | s1 s2 s3 |
+| `llm_real_c3_notext`        | C3       | neither (`--hide_blockage_info`)                                                          | s1 s2 s3 |
+| `llm_real_c3_approach_only` | C3       | only downstream`2_3`; withheld from upstream `2_4` (`--blockage_info_scope approach`) | s1 s2 s3 |
 
 All four are defined in `experiments.py` and drive through `run_matrix.py`, so
 they get manifest identity, skip/reuse, and `build_results.py` aggregation for
@@ -122,6 +122,7 @@ Offline checks (no GPU, no server, no network):
 ```bash
 python tests/smoke_http_backends.py            # the vLLM backend end to end
 python tests/smoke_openrouter_backend.py       # the hosted backend
+python tests/smoke_monitor_llm.py              # monitor, heartbeats, per-request latency
 python tests/smoke_run_identity_flags.py       # identity did not shift
 PYTHONPATH=. python tests/smoke_blockage_prompt_leakage.py
 ```
@@ -260,11 +261,11 @@ a smoke run, risky for a full arm. Shake out with `--simulation_steps 300` first
 vLLM with the scheme you want and *declare* it, so identity keeps the results
 apart. The A40 has ~44.7 GB free, which rules out fp16 past ~20 B params:
 
-| Model | fp16 | 8-bit | 4-bit |
-|---|---|---|---|
-| Qwen2.5-14B (fine-tuned) | ~28 GB ✅ | — | — |
-| Gemma 4 26B A4B | ~50 GB ❌ | ~25 GB ✅ | ~13 GB ✅ |
-| Gemma 4 31B | ~61 GB ❌ | ~31 GB ✅ | ~17 GB ✅ |
+| Model                    | fp16      | 8-bit     | 4-bit     |
+| ------------------------ | --------- | --------- | --------- |
+| Qwen2.5-14B (fine-tuned) | ~28 GB ✅ | —        | —        |
+| Gemma 4 26B A4B          | ~50 GB ❌ | ~25 GB ✅ | ~13 GB ✅ |
+| Gemma 4 31B              | ~61 GB ❌ | ~31 GB ✅ | ~17 GB ✅ |
 
 A Mixture-of-Experts model gets **no** memory relief from being sparse: Gemma 4
 26B A4B activates only 3.8 B params per token but keeps all 128 experts
@@ -305,6 +306,102 @@ precision it serves.
   signal parser. If you forget, the client warns on the first 3 decisions that a
   reasoning marker survived into the answer — never silently parse a chain of
   thought.
+
+## 4e. Watching the server, and how many runs it can take at once
+
+### What one run actually asks of the server
+
+Measured on a full hzreal run (`logs/llm_real_normal/llm_hzreal_none_seed2_*`):
+1727 LLM decisions spread over 624 distinct steps, **mean 2.77 requests per
+decision step**; all 16 intersections deciding together happened exactly once
+(step 30). They desync because re-selecting a phase costs 30 steps and switching
+costs 35. Headless SUMO takes milliseconds between decisions, so a run keeps the
+server **continuously busy at ~1–4 concurrent requests** — not idle-then-bursty.
+
+That is why running arms in parallel is worth it: vLLM decode is
+memory-bandwidth bound, so a 14B model costs nearly the same per step at width 3
+as at width 30. Several runs against one server should scale close to linearly
+until the batch-width knee, which the probe below finds.
+
+### Start the server with explicit limits
+
+`serve_vllm.sh` passes only the served name and port; everything else is a vLLM
+default that can shift on upgrade. Set these so they land in
+`manifest.llm.serve_cmd`:
+
+```bash
+bash serve_vllm.sh ~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b qwen2.5_14b \
+    --max-model-len 4096 --max-num-seqs 64 --gpu-memory-utilization 0.90
+```
+
+KV arithmetic for Qwen2.5-14B fp16 (48 layers, 8 KV heads, head_dim 128):
+192 KiB per token. At 0.90 utilisation on the A40, 40.2 GB − 28 GB weights − ~2 GB
+activations ≈ 10 GB of KV ≈ 55k tokens ≈ **~50 concurrent sequences** at ~1060
+tokens each (759 prompt + ~300 output). `--max-num-seqs 64` matters: the default
+256 lets the scheduler admit sequences it must later preempt; capping near the
+real ceiling turns silent preemption into visible queueing.
+
+### Watch it
+
+In a tmux pane next to the server:
+
+```bash
+python monitor_llm.py                    # every 2 s; --once for a single poll
+python monitor_llm.py --jsonl logs/monitor.jsonl   # keep every poll for later
+```
+
+It reads the server's `/metrics` and, under it, one row per LLM run currently
+in progress — each `runner.py` writes a heartbeat to `logs/_active/<pid>.json`
+(`utils/llm_activity.py`) with its step, in-flight requests and last latency,
+removed when the run ends. Pass `--logs-dir` if the runs were started with one.
+
+On a new vLLM version, check the metric names it exposes before trusting the
+display (V1 renamed a few families; anything missing renders as `n/a`):
+
+```bash
+curl -s localhost:8000/metrics | grep '^# HELP vllm:'
+```
+
+Read the page in this order: **waiting** (sustained > 0 = past capacity),
+**kv %**, **preemptions** (any increase = back off), then ttft/e2e p99 against
+the client timeout.
+
+### Find the knee (~2 minutes, no SUMO run)
+
+```bash
+python tests/probe_vllm_capacity.py --llm_path vllm:qwen2.5_14b
+```
+
+Fires 1, 2, 4 … 64 concurrent copies of a real decision prompt through the real
+client and prints tok/s, latency percentiles, waiting, kv and preemptions per
+level. The **knee** is where tok/s stops rising; the **cliff** is the first
+level with `waiting > 0` or a preemption. It refuses to start while the server
+has requests running. With one run averaging ~3 concurrent requests, the safe
+number of parallel runs is roughly **knee / 3**.
+
+### Running arms in parallel — designed, not yet built
+
+Each run is its own process with its own `traci.start`, so SUMO side-by-side is
+safe, and `create_run_dirs` now claims its directory atomically (two runs of the
+same name in the same second no longer share a folder). What `run_matrix.py`
+still needs before `--parallel N`:
+
+- `launch_run` finds the run dir by diffing `logs/<exp>/<slug>_*` around a
+  blocking `subprocess.call`; under concurrency that misattributes. The
+  heartbeat already carries `run_dir` keyed by pid, so the launcher can read it
+  from `Popen.pid`.
+- Child stdout to `run_dir/runner.log`; in-sweep reuse resolved against the
+  pre-sweep scan only; refuse for `colight` (GPU training).
+- Retry storms: `http_llm._request` retries a timeout up to 4× with no jitter
+  while the server still holds the abandoned generation. Retry a timeout at
+  most once and add jitter first. Raise `--request_timeout` to 300 for sweeps
+  (not an identity field).
+- CPU: SUMO is single-threaded; budget ~1.5 cores per run and check `nproc`.
+
+Determinism is already forfeit under continuous batching (§4b), so parallelism
+costs no guarantee that exists. Start at 4 parallel runs; add one at a time
+while, over a full sweep, `waiting` stayed 0, peak kv < 70 %, no preemptions,
+and e2e p99 < 20 % of the timeout.
 
 ## 5. Run in order — seed 1 first, verify, then the rest
 
@@ -414,11 +511,11 @@ upstream, steps 500–1700), so the incident is reported at `intersection_2_2`
 (approach) and `intersection_1_2` (downstream exit). Two arms × seeds 1–3, plus
 the clean baseline the C2 delta is measured against:
 
-| Experiment            | Blockage | Who hears the incident? | Runs |
-|-----------------------|----------|-------------------------|------|
-| `llm_real_normal`     | none     | —                       | s1 s2 s3 |
-| `llm_real_c2_text`    | C2       | both intersections (`2_2` approach + `1_2` exit) | s1 s2 s3 |
-| `llm_real_c2_notext`  | C2       | neither (`--hide_blockage_info`) | s1 s2 s3 |
+| Experiment             | Blockage | Who hears the incident?                              | Runs     |
+| ---------------------- | -------- | ---------------------------------------------------- | -------- |
+| `llm_real_normal`    | none     | —                                                   | s1 s2 s3 |
+| `llm_real_c2_text`   | C2       | both intersections (`2_2` approach + `1_2` exit) | s1 s2 s3 |
+| `llm_real_c2_notext` | C2       | neither (`--hide_blockage_info`)                   | s1 s2 s3 |
 
 ```bash
 python run_llm_c2.py                      # all three arms, seeds 1-3

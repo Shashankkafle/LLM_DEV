@@ -29,6 +29,7 @@ from configurations import (
     LLM_TEMPERATURE,
     LLM_SYSTEM_PROMPT,
 )
+from utils import llm_activity
 
 MAX_ATTEMPTS = 4
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
@@ -339,7 +340,14 @@ class HTTPChatLLM:
         if self.max_new_tokens:
             payload["max_tokens"] = self.max_new_tokens
         payload.update(self._extra_payload())
-        return self._post_json(payload)
+        # Timed here, per request, because under inference_batch the runner can
+        # only see the whole batch's wall clock. Retries are included: they are
+        # part of what the decision cost.
+        started = time.perf_counter()
+        with llm_activity.track():
+            body = self._post_json(payload)
+        latency_ms = (time.perf_counter() - started) * 1000
+        return body, latency_ms
 
     def _split(self, content, body):
         """Separate one response into (reasoning, answer)."""
@@ -360,17 +368,18 @@ class HTTPChatLLM:
                   f"{usage.get('reasoning_tokens')}). The model spent its whole "
                   f"budget thinking; raise --max_new_tokens.")
 
-    def _resolve(self, body):
+    def _resolve(self, body, latency_ms):
         """One response body -> (answer, usage, reasoning)."""
         usage = _extract_usage(body)
+        usage["latency_ms"] = round(latency_ms, 2)
         reasoning, answer = self._split(_extract_content(body), body)
         self._warn_if_budget_exhausted(answer, usage)
         return answer, usage, reasoning
 
     def inference(self, raw_prompt):
         messages = self._format_prompt(raw_prompt)
-        body = self._complete(messages)
-        answer, self.last_usage, self.last_reasoning = self._resolve(body)
+        body, latency_ms = self._complete(messages)
+        answer, self.last_usage, self.last_reasoning = self._resolve(body, latency_ms)
         self.last_formatted_prompt = _as_text(messages)
         return answer
 
@@ -394,9 +403,10 @@ class HTTPChatLLM:
 
         batch = [self._format_prompt(prompt) for prompt in raw_prompts]
         with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-            bodies = list(pool.map(self._complete, batch))
+            completions = list(pool.map(self._complete, batch))
 
-        resolved = [self._resolve(body) for body in bodies]
+        resolved = [self._resolve(body, latency_ms)
+                    for body, latency_ms in completions]
         self.last_usage_batch = [usage for _, usage, _ in resolved]
         self.last_reasoning_batch = [reasoning for _, _, reasoning in resolved]
         self.last_formatted_prompt = _as_text(batch[0])

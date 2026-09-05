@@ -15,13 +15,12 @@ tests/smoke_openrouter_backend.py.
 Run: python tests/smoke_http_backends.py
 """
 
-import json
 import os
 import sys
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, ".")
+
+from tests.fake_vllm import FakeVLLM, SERVED  # noqa: E402
 
 failures = []
 
@@ -30,96 +29,6 @@ def check(cond, msg):
     print(f"[{'ok  ' if cond else 'FAIL'}] {msg}")
     if not cond:
         failures.append(msg)
-
-
-SERVED = "qwen2.5_14b"
-
-
-class FakeVLLM:
-    """A stand-in vLLM server: /v1/models, /version, /tokenize and
-    /v1/chat/completions. Completions come from a script of (status, body); the
-    last entry repeats once the script is exhausted."""
-
-    def __init__(self):
-        self.script = [(200, self._completion("<signal>ETWT</signal>"))]
-        self.requests = []
-        self.served = [SERVED]
-        self.has_version = True
-        self.has_tokenize = True
-        # Token counts /tokenize reports for enable_thinking true/false. Equal
-        # counts are how a template that ignores the variable presents itself.
-        self.tokenize_counts = {True: 20, False: 12}
-        self._lock = threading.Lock()
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}/v1"
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
-
-    @staticmethod
-    def _completion(content, reasoning_content=None, prompt_tokens=759,
-                    completion_tokens=42, finish_reason="stop"):
-        message = {"role": "assistant", "content": content}
-        if reasoning_content is not None:
-            message["reasoning_content"] = reasoning_content
-        return {
-            "model": SERVED,
-            "choices": [{"message": message, "finish_reason": finish_reason}],
-            "usage": {"prompt_tokens": prompt_tokens,
-                      "completion_tokens": completion_tokens},
-        }
-
-    def _next(self, payload):
-        with self._lock:
-            self.requests.append(payload)
-            return self.script[0] if len(self.script) == 1 else self.script.pop(0)
-
-    def _handler(self):
-        outer = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def _reply(self, status, body):
-                encoded = json.dumps(body).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(encoded)))
-                self.end_headers()
-                self.wfile.write(encoded)
-
-            def do_GET(self):
-                if self.path == "/v1/models":
-                    self._reply(200, {"data": [
-                        {"id": name, "root": f"/models/{name}",
-                         "max_model_len": 32768} for name in outer.served]})
-                elif self.path == "/version" and outer.has_version:
-                    self._reply(200, {"version": "0.11.0"})
-                else:
-                    self._reply(404, {"detail": "not found"})
-
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length", 0))
-                payload = json.loads(self.rfile.read(length) or b"{}")
-                payload["_path"] = self.path
-                payload["_auth"] = self.headers.get("Authorization")
-                if self.path == "/tokenize":
-                    with outer._lock:
-                        outer.requests.append(payload)
-                    if not outer.has_tokenize:
-                        return self._reply(404, {"detail": "not found"})
-                    thinking = (payload.get("chat_template_kwargs") or {}).get(
-                        "enable_thinking")
-                    return self._reply(200, {"count": outer.tokenize_counts[thinking]})
-                self._reply(*outer._next(payload))
-
-            def log_message(self, *args):
-                pass
-
-        return Handler
-
-    def completions(self):
-        return [r for r in self.requests if r.get("_path") == "/v1/chat/completions"]
-
-    def reset(self, script=None):
-        self.script = script or [(200, self._completion("<signal>ETWT</signal>"))]
-        self.requests.clear()
 
 
 fake = FakeVLLM()
@@ -265,9 +174,13 @@ check(llm._leaked_reasoning_calls == 1,
 
 llm = fresh()
 llm.inference("x")
-check(llm.last_usage == {"prompt_tokens": 759, "completion_tokens": 42,
-                         "reasoning_tokens": None, "finish_reason": "stop"},
-      "last_usage keeps the 4-key shape the recorder expects")
+check({k: llm.last_usage.get(k) for k in
+       ("prompt_tokens", "completion_tokens", "reasoning_tokens", "finish_reason")}
+      == {"prompt_tokens": 759, "completion_tokens": 42,
+          "reasoning_tokens": None, "finish_reason": "stop"},
+      "last_usage keeps the keys the recorder expects")
+check(isinstance(llm.last_usage.get("latency_ms"), float) and llm.last_usage["latency_ms"] > 0,
+      "last_usage carries the request's own latency")
 
 llm = fresh()
 outputs = llm.inference_batch(["a", "b", "c"])

@@ -181,8 +181,10 @@ check(sent["messages"][0]["content"] == mod.LLM_SYSTEM_PROMPT,
 check(sent["messages"][1]["content"] == "STATE HERE",
       "the user turn is the prompt verbatim, unwrapped")
 check(output == "<signal>ETWT</signal>", "inference() returns the assistant text")
-check(llm.last_usage == {"prompt_tokens": 759, "completion_tokens": 42,
-                         "reasoning_tokens": None, "finish_reason": "stop"},
+check({k: llm.last_usage.get(k) for k in
+       ("prompt_tokens", "completion_tokens", "reasoning_tokens", "finish_reason")}
+      == {"prompt_tokens": 759, "completion_tokens": 42,
+          "reasoning_tokens": None, "finish_reason": "stop"},
       "last_usage carries the server's token counts")
 check(runner.parse_llm_signal(output) == "ETWT",
       "the runner's existing parser reads the hosted output unchanged")
