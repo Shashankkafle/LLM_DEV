@@ -1,0 +1,19 @@
+{
+  "scenario_name": "hzreal_h2_steady",
+  "kind": "demand_surge",
+  "schema_version": 2,
+  "description": "Control for the inject-surge families: hzreal hour 1 as recorded, then the steady minutes 20-59 (41-49 departures/min, no bump) tiled with +-30 s jitter to fill a 9000 s horizon. No surge. Pair every surge run with this alias at the same seed.",
+  "config_alias": "hzreal_h2_steady",
+  "control_alias": null,
+  "sumocfg": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_h2_steady.sumocfg",
+  "route_file": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_h2_steady.rou.xml",
+  "sidecar": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_h2_steady.surge.json",
+  "simulation_steps": 9000,
+  "base": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real.rou.xml",
+  "net": "dataset/llm_light/Hangzhou/4_4/roadnet.net.xml",
+  "horizon": 9000,
+  "tiling": {"source": [1200, 3600], "scale": 1.0},
+  "gen_seed": 20260924,
+  "intersection": "intersection_2_3",
+  "surges": []
+}

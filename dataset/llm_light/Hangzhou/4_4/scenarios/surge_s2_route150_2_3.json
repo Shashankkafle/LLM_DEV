@@ -1,0 +1,23 @@
+{
+  "scenario_name": "hzreal_s2_route150_2_3",
+  "kind": "demand_surge",
+  "description": "S2: route demand surge x1.5 (+50%) on every vehicle whose route passes road_2_4_3, the North approach into intersection_2_3 (the C3 blockage site; 186 base vehicles, 154 of them departing inside the window). Trapezoidal profile over 600-3600 s with 300 s linear ramps (full x1.5 from 900 to 3300 s): extra clones of the same route with +-20 s jitter (id surge_<id>_<k>). Base vehicles untouched. 7200 s horizon: hour 2 is a jittered copy of hour 1 (as in hzreal_h2) so recovery is observable. Control arm: hzreal_h2 at the same seed.",
+  "config_alias": "hzreal_s2_route150_2_3",
+  "sumocfg": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_s2_route150_2_3.sumocfg",
+  "route_file": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_s2_route150_2_3.rou.xml",
+  "sidecar": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_s2_route150_2_3.surge.json",
+  "simulation_steps": 7200,
+  "generator": {
+    "base": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real.rou.xml",
+    "out": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_s2_route150_2_3.rou.xml",
+    "horizon": 7200,
+    "hour2_scale": 1.0,
+    "surge_type": "route",
+    "window": [600, 3600],
+    "ramp": 300,
+    "mult": 1.5,
+    "od": null,
+    "via": ["road_2_4_3"],
+    "gen_seed": 20260924
+  }
+}

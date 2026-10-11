@@ -68,6 +68,24 @@ step-sampled sets can miss a few vehicles). `sumo_trip_count` reads the `count`
 attribute of `vehicleTripStatistics`, which old SUMO versions (e.g. 1.12) do not
 write — 0 there means "attribute absent", not "no trips".
 
+`peak_vehicles_in_network` / `peak_vehicles_in_network_time_s` (added 2026-09-24):
+the highest step-sampled count of non-obstacle vehicles in the network and the
+sim time it was first reached. The per-second series behind it is
+`network_timeseries.csv` in the run dir (`t, vehicles_in_network, departed_cum,
+arrived_cum, halting_total, not_inserted_pending`); `halting_total` is the same
+speed < 0.1 count that feeds `average_queue_length`. See SURGE_SCENARIOS.md.
+
+`edge_timeseries.csv` (added 2026-09-29): one wide row per step, `t`, then
+`vehicles:<edge>` and `halting:<edge>` for every non-internal edge of the
+network plus an `internal` bucket for junction lanes. Built inside the same
+per-vehicle loop as `halting_total`, so per row `sum(halting:*) ==
+halting_total` and `sum(vehicles:*) == vehicles_in_network` exactly, the
+obstacle excluded. `MetricsRecorder(edge_series=False)` turns it off; every
+other output is byte-identical either way. `surge_timeseries.csv` (`t, surge,
+departed_cum, arrived_cum, pending`) and the summary's `surge_vehicles`
+appear only when the route file carries injected `surge_<name>_<k>` vehicles
+(SURGE_SCENARIOS.md, schema v2); `tools/analyze_surge.py` reads all three.
+
 ---
 
 ## Reconciliation findings (SUMO pipeline vs LLMTSCS/CityFlow)

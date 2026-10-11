@@ -1,0 +1,23 @@
+{
+  "scenario_name": "hzreal_h2",
+  "kind": "demand_surge",
+  "description": "Control arm for the surge scenarios: the hzreal demand extended to a 7200 s horizon with NO surge. Hour 2 is a copy of every hour-1 vehicle at depart + 3600 with uniform +-30 s jitter (id <id>_h2, same route). Run with simulation_steps 7200. Any surge result is read against this arm at the same seed.",
+  "config_alias": "hzreal_h2",
+  "sumocfg": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_h2.sumocfg",
+  "route_file": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_h2.rou.xml",
+  "sidecar": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_h2.surge.json",
+  "simulation_steps": 7200,
+  "generator": {
+    "base": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real.rou.xml",
+    "out": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_h2.rou.xml",
+    "horizon": 7200,
+    "hour2_scale": 1.0,
+    "surge_type": "network",
+    "window": [600, 3600],
+    "ramp": 300,
+    "mult": 1.0,
+    "od": null,
+    "via": null,
+    "gen_seed": 20260924
+  }
+}

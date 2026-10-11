@@ -1,0 +1,59 @@
+{
+  "scenario_name": "hzreal_cross_2_3_1h",
+  "kind": "demand_surge",
+  "schema_version": 2,
+  "description": "One-hour variant of the crossing surge: hzreal hour 1 as recorded (no tiling), two injected streams crossing at intersection_2_3 (we3 W->E row 3, ns2 N->S column 2) at 900 veh/h each, step-shaped over 1500-2100 s (after the natural minutes-10-19 bump), 25 min of recovery to 3600 s. Control: hzreal at the same seed.",
+  "config_alias": "hzreal_cross_2_3_1h",
+  "control_alias": "hzreal",
+  "sumocfg": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_cross_2_3_1h.sumocfg",
+  "route_file": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_cross_2_3_1h.rou.xml",
+  "sidecar": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_cross_2_3_1h.surge.json",
+  "simulation_steps": 3600,
+  "base": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real.rou.xml",
+  "net": "dataset/llm_light/Hangzhou/4_4/roadnet.net.xml",
+  "horizon": 3600,
+  "tiling": {
+    "source": [
+      0,
+      3600
+    ],
+    "scale": 1.0
+  },
+  "gen_seed": 20260924,
+  "intersection": "intersection_2_3",
+  "surges": [
+    {
+      "name": "we3",
+      "mode": "inject",
+      "route": [
+        "road_0_3_0",
+        "road_1_3_0",
+        "road_2_3_0",
+        "road_3_3_0",
+        "road_4_3_0"
+      ],
+      "rate_veh_h": 900,
+      "window": [
+        1500,
+        2100
+      ],
+      "ramp": 0,
+      "arrivals": "uniform"
+    },
+    {
+      "name": "ns2",
+      "mode": "inject",
+      "od": [
+        "road_2_5_3",
+        "road_2_1_3"
+      ],
+      "rate_veh_h": 900,
+      "window": [
+        1500,
+        2100
+      ],
+      "ramp": 0,
+      "arrivals": "uniform"
+    }
+  ]
+}

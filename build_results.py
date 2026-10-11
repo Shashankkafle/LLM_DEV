@@ -25,7 +25,8 @@ import sys
 from pathlib import Path
 
 from configurations import LOGS_DIR_NAME, RUN_MANIFEST_FILENAME
-from experiments import identity_from_manifest, identity_key, model_token
+from experiments import (CONFIGS, identity_from_manifest, identity_key, model_token,
+                         surge_control_alias)
 
 OUT_DIR = "report_sheet"
 FINAL_SUMMARY = "final_summary.json"
@@ -65,6 +66,16 @@ def dataset_routes(config_basename):
     return dataset, routes
 
 
+def config_alias_of(config_basename):
+    """Alias in experiments.CONFIGS whose sumocfg has this basename, else the
+    basename's stem. Surge variants of one dataset share dataset/routes, so the
+    alias is what keeps them apart in the config key."""
+    for alias, path in CONFIGS.items():
+        if Path(path).name == config_basename:
+            return alias
+    return (config_basename or "").replace(".sumocfg", "")
+
+
 def load_json(path):
     try:
         return json.loads(Path(path).read_text())
@@ -82,7 +93,8 @@ def row_for_run(run_dir, logs_root):
     summary = load_json(run_dir / FINAL_SUMMARY)
     env = manifest.get("environment") or {}
     blk = manifest.get("blockage") or {}
-    dataset, routes = dataset_routes(Path(env.get("simulation_config") or "").name)
+    config_basename = Path(env.get("simulation_config") or "").name
+    dataset, routes = dataset_routes(config_basename)
     reused = load_json(run_dir / "reused_from.json")
 
     row = {
@@ -91,6 +103,7 @@ def row_for_run(run_dir, logs_root):
         "status": manifest.get("status") or ("ok" if summary else "incomplete"),
         "reused_from": reused.get("reused_from", ""),
         "controller": manifest.get("controller", ""),
+        "config": config_alias_of(config_basename),
         "dataset": dataset,
         "routes": routes,
         "intersection_config": env.get("intersection_config", ""),
@@ -130,7 +143,7 @@ def collect_rows(scan_dir, logs_root):
 
 def _config_key(row):
     """Identity minus seed -- groups replicate seeds of one config."""
-    return (row["controller"], row["model"], row["dataset"], row["routes"],
+    return (row["controller"], row["model"], row["config"], row["dataset"], row["routes"],
             row["intersection_config"], row["steps"], row["blockage"],
             row["hide_info"], row["info_scope"], row["num_rounds"])
 
@@ -138,7 +151,15 @@ def _config_key(row):
 def _family_key(row):
     """Config minus the blockage -- links a blockage arm to its clean baseline.
     Keeps the model, so an arm's delta is measured against ITS OWN clean run."""
-    return (row["controller"], row["model"], row["dataset"], row["routes"],
+    return (row["controller"], row["model"], row["config"], row["dataset"], row["routes"],
+            row["intersection_config"], row["steps"], row["hide_info"],
+            row["info_scope"], row["num_rounds"])
+
+
+def _control_family_key(row, control_alias):
+    """The family a surge arm's control lives in: same everything, the control
+    config alias in place of the surge one."""
+    return (row["controller"], row["model"], control_alias, row["dataset"], row["routes"],
             row["intersection_config"], row["steps"], row["hide_info"],
             row["info_scope"], row["num_rounds"])
 
@@ -177,7 +198,7 @@ def aggregate_configs(completed_rows):
         seeds = sorted({r["seed"] for r in runs}, key=lambda s: (s is None, s))
         entry = {
             "controller": sample["controller"], "model": sample["model"],
-            "dataset": sample["dataset"], "routes": sample["routes"],
+            "config": sample["config"], "dataset": sample["dataset"], "routes": sample["routes"],
             "intersection_config": sample["intersection_config"],
             "steps": sample["steps"], "blockage": sample["blockage"],
             "hide_info": sample["hide_info"], "info_scope": sample["info_scope"],
@@ -185,6 +206,7 @@ def aggregate_configs(completed_rows):
             "n_seeds": len(seeds),
             "seeds": ",".join(str(s) for s in seeds),
             "_family": _family_key(sample),
+            "_runs": runs,
         }
         for col in AGG_METRICS:
             values = _floats(runs, col)
@@ -193,7 +215,50 @@ def aggregate_configs(completed_rows):
                                    if len(values) >= 2 else "")
         configs.append(entry)
     _add_blockage_deltas(configs)
+    _add_surge_deltas(configs)
     return configs
+
+
+def _paired_deltas(arm_runs, control_runs, col):
+    control_by_seed = {r["seed"]: r for r in control_runs}
+    deltas = []
+    for run in arm_runs:
+        control = control_by_seed.get(run["seed"])
+        if control is None:
+            continue
+        try:
+            deltas.append(float(run[col]) - float(control[col]))
+        except (TypeError, ValueError):
+            continue
+    return deltas
+
+
+def _add_surge_deltas(configs):
+    """For each surge arm (a config whose scenario names a control_alias), the
+    seed-paired ATT and not-inserted deltas against that control."""
+    by_family = {c["_family"]: c for c in configs}
+    for c in configs:
+        c["control"] = ""
+        c["delta_att_vs_control"] = ""
+        c["delta_att_vs_control_std"] = ""
+        c["delta_not_inserted_vs_control"] = ""
+        c["n_paired_seeds"] = ""
+        control_alias = surge_control_alias(c["config"])
+        if not control_alias:
+            continue
+        control = by_family.get(_control_family_key(c["_runs"][0], control_alias))
+        if control is None:
+            continue
+        att = _paired_deltas(c["_runs"], control["_runs"], "att_internal")
+        not_inserted = _paired_deltas(c["_runs"], control["_runs"], "not_inserted")
+        c["control"] = control_alias
+        c["n_paired_seeds"] = len(att)
+        if att:
+            c["delta_att_vs_control"] = round(statistics.mean(att), 3)
+            c["delta_att_vs_control_std"] = (round(statistics.stdev(att), 3)
+                                             if len(att) >= 2 else "")
+        if not_inserted:
+            c["delta_not_inserted_vs_control"] = round(statistics.mean(not_inserted), 1)
 
 
 def _add_blockage_deltas(configs):
@@ -224,16 +289,18 @@ def write_csv(path, columns, rows):
 
 
 RUN_COLUMNS = (["run_dir", "experiment", "status", "reused_from", "controller",
-                "model", "dataset", "routes", "intersection_config", "green_s",
+                "model", "config", "dataset", "routes", "intersection_config", "green_s",
                 "steps", "seed", "blockage", "hide_info", "info_scope",
                 "num_rounds", "sumo_version", "date"] + [c for c, _ in METRICS])
 
-CONFIG_COLUMNS = (["controller", "model", "dataset", "routes",
+CONFIG_COLUMNS = (["controller", "model", "config", "dataset", "routes",
                    "intersection_config",
                    "steps", "blockage", "hide_info", "info_scope", "num_rounds",
                    "n_seeds", "seeds"]
                   + [f"{m}_{stat}" for m in AGG_METRICS for stat in ("mean", "std")]
-                  + ["delta_att_internal", "delta_over_clean_spread"])
+                  + ["delta_att_internal", "delta_over_clean_spread",
+                     "control", "delta_att_vs_control", "delta_att_vs_control_std",
+                     "delta_not_inserted_vs_control", "n_paired_seeds"])
 
 
 def print_summary(configs):
@@ -249,8 +316,8 @@ def print_summary(configs):
         arms = [c for c in configs if c["_family"] == family]
         head = arms[0]
         label = head["controller"] + (f" [{head['model']}]" if head["model"] else "")
-        print(f"\n{label}  {head['dataset']}/{head['routes']}  "
-              f"({head['intersection_config']}, {head['steps']} steps)")
+        print(f"\n{label}  {head['config']} ({head['dataset']}/{head['routes']}, "
+              f"{head['intersection_config']}, {head['steps']} steps)")
         for c in sorted(arms, key=lambda x: (x["blockage"] != "none", x["blockage"])):
             line = (f"  {c['blockage']:26s} n={c['n_seeds']}  "
                     f"ATT={fmt(c['att_internal_mean'], c['att_internal_std'])}  "
@@ -260,6 +327,12 @@ def print_summary(configs):
                 mult = c["delta_over_clean_spread"]
                 line += f"  ΔATT={c['delta_att_internal']:+.1f}"
                 line += f" ({mult}x spread)" if mult != "" else ""
+            if c["control"]:
+                line += (f"  vs {c['control']}: ΔATT={c['delta_att_vs_control']:+.1f}"
+                         f" Δnot_inserted={c['delta_not_inserted_vs_control']:+.1f}"
+                         f" (n={c['n_paired_seeds']})"
+                         if c["delta_att_vs_control"] != "" else
+                         f"  vs {c['control']}: no paired seeds")
             print(line)
 
 

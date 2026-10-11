@@ -278,6 +278,14 @@ RUN_RECORD_SCHEMA_VERSION = 2
 
 STEP_SUMMARIES_FILENAME = "step_summaries.jsonl"
 FINAL_SUMMARY_FILENAME = "final_summary.json"
+# Per-second network-level counts (vehicles in network, cumulative departed /
+# arrived, halting, pending insertion), obstacle excluded. See SURGE_SCENARIOS.md.
+NETWORK_TIMESERIES_FILENAME = "network_timeseries.csv"
+# Per-edge vehicle and halting counts every step (wide CSV), and per-surge
+# departed/arrived/pending counts for injected surge streams (long CSV, only
+# written when the route file carries surge_<name>_<k> vehicles).
+EDGE_TIMESERIES_FILENAME = "edge_timeseries.csv"
+SURGE_TIMESERIES_FILENAME = "surge_timeseries.csv"
 DECISIONS_FILENAME = "decisions.jsonl"
 PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.jsonl"
 

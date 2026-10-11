@@ -1,4 +1,6 @@
+import csv
 import json
+import re
 import time
 import xml.etree.ElementTree as ET
 from configurations import (
@@ -6,6 +8,9 @@ from configurations import (
     PHASE_NAMES,
     STEP_SUMMARIES_FILENAME,
     FINAL_SUMMARY_FILENAME,
+    NETWORK_TIMESERIES_FILENAME,
+    EDGE_TIMESERIES_FILENAME,
+    SURGE_TIMESERIES_FILENAME,
     DECISIONS_FILENAME,
     SUMO_STATISTIC_FILENAME,
     OBSTACLE_VEHICLE_PREFIX,
@@ -28,9 +33,28 @@ def _json_fallback(obj):
     return str(obj)
 
 
+NETWORK_TIMESERIES_COLUMNS = ["t", "vehicles_in_network", "departed_cum",
+                              "arrived_cum", "halting_total", "not_inserted_pending"]
+SURGE_TIMESERIES_COLUMNS = ["t", "surge", "departed_cum", "arrived_cum", "pending"]
+# Injected surge vehicles are surge_<name>_<k> with a letter-leading name; the
+# older clone ids (surge_<baseid>_<k>) start with a digit and never match.
+SURGE_ID_PATTERN = re.compile(r"^surge_([A-Za-z][A-Za-z0-9-]*)_\d+$")
+INTERNAL_EDGE_BUCKET = "internal"
+
+
+def _format_sim_time(t):
+    return int(t) if float(t).is_integer() else t
+
+
+def _count_on_edge(per_edge, road, halted):
+    edge = INTERNAL_EDGE_BUCKET if road.startswith(":") else road
+    vehicles, halting = per_edge.get(edge, (0, 0))
+    per_edge[edge] = (vehicles + 1, halting + (1 if halted else 0))
+
+
 class MetricsRecorder:
     def __init__(self, run_dir, verbose=True, phase_names=None, sumo_config=None,
-                 blockage_manager=None, run_info=None):
+                 blockage_manager=None, run_info=None, edge_series=True):
         self.verbose = verbose
         self.input_files = (
             input_fingerprints(sumo_config) if sumo_config else None
@@ -82,6 +106,28 @@ class MetricsRecorder:
         # Sim time at the most recent recorded step. Used to charge vehicles
         # still in the network their time-so-far when the horizon cuts them off.
         self.last_sim_time = 0.0
+
+        # Per-second network-level series (network_timeseries.csv) plus the
+        # peak occupancy it reveals. Cumulative counters exclude the obstacle
+        # like every other per-vehicle count here.
+        self.timeseries_path = self.run_dir / NETWORK_TIMESERIES_FILENAME
+        self._timeseries_started = False
+        self.departed_cum = 0
+        self.arrived_cum = 0
+        self.peak_vehicles_in_network = 0
+        self.peak_vehicles_in_network_time_s = None
+
+        # Per-edge series (edge_timeseries.csv), built from the same per-vehicle
+        # loop as halting_total so the two agree exactly; and per-surge series
+        # (surge_timeseries.csv) for injected surge_<name>_<k> streams.
+        self.edge_series = edge_series
+        self.edge_timeseries_path = self.run_dir / EDGE_TIMESERIES_FILENAME
+        self.edge_columns = None
+        self.surge_timeseries_path = self.run_dir / SURGE_TIMESERIES_FILENAME
+        self._surge_timeseries_started = False
+        self.surge_names = set()
+        self.surge_departed = {}
+        self.surge_arrived = {}
 
         # Captured on the first recorded step (TraCI is not connected yet at
         # construction time, and is already closed by final-summary time).
@@ -162,19 +208,26 @@ class MetricsRecorder:
         # still_running forever and pollute the CityFlow-style averages and
         # completion_rate of the blockage arm only.
         self._track_loaded_ids()
+        departed_this_step = 0
         for vehicle in traci.simulation.getDepartedIDList():
             if vehicle.startswith(OBSTACLE_VEHICLE_PREFIX):
                 continue
+            departed_this_step += 1
             self.departed_ids.add(vehicle)
             self.depart_times[vehicle] = current_time
             self.final_edges[vehicle] = traci.vehicle.getRoute(vehicle)[-1]
+            self._count_surge_id(vehicle, self.surge_departed)
 
         # Accumulate true waiting time and count the current network-wide queue.
         current_queue_length = 0
+        vehicles_in_network = 0
+        per_edge = {}
         for vehicle in traci.vehicle.getIDList():
             if vehicle.startswith(OBSTACLE_VEHICLE_PREFIX):
                 continue
-            if traci.vehicle.getSpeed(vehicle) < MIN_SPEED:
+            vehicles_in_network += 1
+            halted = traci.vehicle.getSpeed(vehicle) < MIN_SPEED
+            if halted:
                 current_queue_length += 1
                 self.waiting_accumulated[vehicle] = (
                     self.waiting_accumulated.get(vehicle, 0.0) + step_length
@@ -184,13 +237,17 @@ class MetricsRecorder:
                 self.approach_time[vehicle] = (
                     self.approach_time.get(vehicle, 0.0) + step_length
                 )
+            _count_on_edge(per_edge, road, halted)
         self.queue_lengths.append(current_queue_length)
 
         # Finalize trips for vehicles that arrived (left the network) this step.
+        arrived_this_step = 0
         for vehicle in traci.simulation.getArrivedIDList():
             if vehicle.startswith(OBSTACLE_VEHICLE_PREFIX):
                 continue
+            arrived_this_step += 1
             self.arrived_ids.add(vehicle)
+            self._count_surge_id(vehicle, self.surge_arrived)
             depart_time = self.depart_times.get(vehicle)
             if depart_time is None:
                 continue  # never saw it depart; skip rather than fabricate a time
@@ -206,6 +263,79 @@ class MetricsRecorder:
             summary["blocked_lanes"] = self.blockage_manager.get_blocked_lane_ids()
         with open(self.step_log_path, "a") as f:
             f.write(json.dumps(summary) + "\n")
+
+        pending_ids = [v for v in traci.simulation.getPendingVehicles()
+                       if not v.startswith(OBSTACLE_VEHICLE_PREFIX)]
+        self._record_network_timeseries(current_time, vehicles_in_network,
+                                        departed_this_step, arrived_this_step,
+                                        current_queue_length, len(pending_ids))
+        if self.edge_series:
+            self._record_edge_timeseries(current_time, per_edge)
+        self._record_surge_timeseries(current_time, pending_ids)
+
+    def _count_surge_id(self, vehicle, counter):
+        match = SURGE_ID_PATTERN.match(vehicle)
+        if match is None:
+            return
+        name = match.group(1)
+        self.surge_names.add(name)
+        counter[name] = counter.get(name, 0) + 1
+
+    def _record_network_timeseries(self, current_time, vehicles_in_network,
+                                   departed, arrived, halting, pending):
+        """Append one row of network-level counts for this step and track the
+        peak occupancy. halting is the same speed < MIN_SPEED count that feeds
+        average_queue_length; pending are vehicles SUMO could not insert yet."""
+        self.departed_cum += departed
+        self.arrived_cum += arrived
+        if vehicles_in_network > self.peak_vehicles_in_network:
+            self.peak_vehicles_in_network = vehicles_in_network
+            self.peak_vehicles_in_network_time_s = _format_sim_time(current_time)
+        with open(self.timeseries_path,
+                  "a" if self._timeseries_started else "w", newline="") as f:
+            writer = csv.writer(f)
+            if not self._timeseries_started:
+                writer.writerow(NETWORK_TIMESERIES_COLUMNS)
+            writer.writerow([_format_sim_time(current_time), vehicles_in_network,
+                             self.departed_cum, self.arrived_cum, halting, pending])
+        self._timeseries_started = True
+
+    def _record_edge_timeseries(self, current_time, per_edge):
+        """One wide row per step: vehicles:<edge>... then halting:<edge>...,
+        with every non-internal edge of the network as a column and all
+        internal (junction) lanes folded into one bucket."""
+        first_row = self.edge_columns is None
+        if first_row:
+            edges = sorted(e for e in traci.edge.getIDList() if not e.startswith(":"))
+            self.edge_columns = edges + [INTERNAL_EDGE_BUCKET]
+        vehicles = [per_edge.get(edge, (0, 0))[0] for edge in self.edge_columns]
+        halting = [per_edge.get(edge, (0, 0))[1] for edge in self.edge_columns]
+        with open(self.edge_timeseries_path, "w" if first_row else "a", newline="") as f:
+            writer = csv.writer(f)
+            if first_row:
+                writer.writerow(["t"] + [f"vehicles:{e}" for e in self.edge_columns]
+                                + [f"halting:{e}" for e in self.edge_columns])
+            writer.writerow([_format_sim_time(current_time)] + vehicles + halting)
+
+    def _record_surge_timeseries(self, current_time, pending_ids):
+        """One row per injected surge per step. Nothing is written for runs
+        whose route file has no surge_<name>_<k> vehicles."""
+        pending_by_surge = {}
+        for vehicle in pending_ids:
+            self._count_surge_id(vehicle, pending_by_surge)
+        if not self.surge_names:
+            return
+        with open(self.surge_timeseries_path,
+                  "a" if self._surge_timeseries_started else "w", newline="") as f:
+            writer = csv.writer(f)
+            if not self._surge_timeseries_started:
+                writer.writerow(SURGE_TIMESERIES_COLUMNS)
+            for name in sorted(self.surge_names):
+                writer.writerow([_format_sim_time(current_time), name,
+                                 self.surge_departed.get(name, 0),
+                                 self.surge_arrived.get(name, 0),
+                                 pending_by_surge.get(name, 0)])
+        self._surge_timeseries_started = True
 
     def _parse_sumo_statistics(self):
         """Parse SUMO's --statistic-output (written on close) into
@@ -329,6 +459,15 @@ class MetricsRecorder:
         summary["total_departed_vehicles"] = total_departed
         summary["loaded_but_never_departed"] = max(total_loaded - total_departed, 0)
         summary["still_running_at_end"] = max(total_departed - total_arrived, 0)
+        # Highest step-sampled occupancy (obstacle excluded) and when it was
+        # first reached -- the surge/recovery headline, from network_timeseries.csv.
+        summary["peak_vehicles_in_network"] = self.peak_vehicles_in_network
+        summary["peak_vehicles_in_network_time_s"] = self.peak_vehicles_in_network_time_s
+        if self.surge_names:
+            summary["surge_vehicles"] = {
+                name: {"departed": self.surge_departed.get(name, 0),
+                       "arrived": self.surge_arrived.get(name, 0)}
+                for name in sorted(self.surge_names)}
         average_per_decision_wait_s = (
             round(sum(self.decision_wait_averages) / len(self.decision_wait_averages), 2)
             if len(self.decision_wait_averages) > 0 else 0

@@ -1,0 +1,23 @@
+{
+  "scenario_name": "hzreal_s1_net150",
+  "kind": "demand_surge",
+  "description": "S1: network-wide demand surge x1.5 (+50%). Trapezoidal profile over 600-3600 s with 300 s linear ramps (full x1.5 from 900 to 3300 s), applied to every vehicle departing inside the window: extra clones of the same route with +-20 s jitter (id surge_<id>_<k>). Base vehicles untouched. 7200 s horizon: hour 2 is a jittered copy of hour 1 (as in hzreal_h2) so the network's recovery after the surge is observable. Control arm: hzreal_h2 at the same seed.",
+  "config_alias": "hzreal_s1_net150",
+  "sumocfg": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_s1_net150.sumocfg",
+  "route_file": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_s1_net150.rou.xml",
+  "sidecar": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_s1_net150.surge.json",
+  "simulation_steps": 7200,
+  "generator": {
+    "base": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real.rou.xml",
+    "out": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_s1_net150.rou.xml",
+    "horizon": 7200,
+    "hour2_scale": 1.0,
+    "surge_type": "network",
+    "window": [600, 3600],
+    "ramp": 300,
+    "mult": 1.5,
+    "od": null,
+    "via": null,
+    "gen_seed": 20260924
+  }
+}

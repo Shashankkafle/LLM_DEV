@@ -1,0 +1,59 @@
+{
+  "scenario_name": "hzreal_cross_2_3_r600",
+  "kind": "demand_surge",
+  "schema_version": 2,
+  "description": "Template for the crossing-surge families: two injected streams that meet at intersection_2_3, W->E along row 3 (entering at road_0_3_0, approach road_1_3_0) and N->S along column 2 (entering at road_2_5_3, approach road_2_4_3, the C3 approach). Both are step-shaped at rate_veh_h over 3600-4800 s on top of the steady-tiled demand of hzreal_h2_steady. tools/make_surge_family.py derives the rate and hold sweeps from this file. | family member: rate=600 on all surges",
+  "config_alias": "hzreal_cross_2_3_r600",
+  "control_alias": "hzreal_h2_steady",
+  "sumocfg": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_cross_2_3_r600.sumocfg",
+  "route_file": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_cross_2_3_r600.rou.xml",
+  "sidecar": "dataset/llm_light/Hangzhou/4_4/surge/anon_4_4_hangzhou_real_cross_2_3_r600.surge.json",
+  "simulation_steps": 9000,
+  "base": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real.rou.xml",
+  "net": "dataset/llm_light/Hangzhou/4_4/roadnet.net.xml",
+  "horizon": 9000,
+  "tiling": {
+    "source": [
+      1200,
+      3600
+    ],
+    "scale": 1.0
+  },
+  "gen_seed": 20260924,
+  "intersection": "intersection_2_3",
+  "surges": [
+    {
+      "name": "we3",
+      "mode": "inject",
+      "route": [
+        "road_0_3_0",
+        "road_1_3_0",
+        "road_2_3_0",
+        "road_3_3_0",
+        "road_4_3_0"
+      ],
+      "rate_veh_h": 600.0,
+      "window": [
+        3600,
+        4800
+      ],
+      "ramp": 0,
+      "arrivals": "uniform"
+    },
+    {
+      "name": "ns2",
+      "mode": "inject",
+      "od": [
+        "road_2_5_3",
+        "road_2_1_3"
+      ],
+      "rate_veh_h": 600.0,
+      "window": [
+        3600,
+        4800
+      ],
+      "ramp": 0,
+      "arrivals": "uniform"
+    }
+  ]
+}

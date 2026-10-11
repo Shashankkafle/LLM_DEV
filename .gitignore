@@ -17,9 +17,13 @@ Thumbs.db
 # uv.lock must stay tracked -- it is the cross-machine dependency pin set
 models/LLMs
 logs/
+# Route files and run outputs written by tests (see tests/artifacts/README.md)
+tests/artifacts/*
+!tests/artifacts/README.md
 .ipynb_checkpoints
 # API keys (OPENROUTER_API_KEY etc) -- keep secrets out of the repo entirely
 .env
 .env.*
 *.secrets
 .vllm_serve_cmd
+scratchpad/

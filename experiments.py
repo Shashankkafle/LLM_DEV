@@ -32,9 +32,60 @@ CONFIGS = {
     # variants, which zero sigma and are seed-invariant). Same 2983-veh demand.
     "hzreal": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real.sumocfg",
     "jinan1": "dataset/llm_light/Jinan/3_4/anon_3_4_jinan_real_cfphys.sumocfg",
+    # Demand-surge variants of hzreal (SURGE_SCENARIOS.md), generated offline by
+    # tools/gen_surge_routes.py from scenarios/surge_*.json. All three are 7200 s
+    # (hour 2 = jittered copy of hour 1), so run them with steps=7200. Naming:
+    # hzreal_s<n>_<net|route><mult x100>[_<x>_<y>], _h2 = extended, no surge.
+    "hzreal_h2": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_h2.sumocfg",
+    "hzreal_s1_net150": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_s1_net150.sumocfg",
+    "hzreal_s2_route150_2_3": "dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_s2_route150_2_3.sumocfg",
 }
 
 _HZ_SCENARIOS = "dataset/llm_light/Hangzhou/4_4/scenarios"
+
+
+def _discover_surge_scenarios(scenario_dirs):
+    """Every scenarios/surge_*.json with kind demand_surge, keyed by its config
+    alias, so a generated scenario is runnable without editing this file."""
+    found = {}
+    for scenario_dir in scenario_dirs:
+        for path in sorted(Path(scenario_dir).glob("surge_*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if data.get("kind") != "demand_surge":
+                continue
+            alias = data.get("config_alias") or data.get("scenario_name")
+            if alias in found:
+                raise ValueError(f"surge alias '{alias}' is defined by both "
+                                 f"{found[alias]['path']} and {path}")
+            found[alias] = {"path": str(path), "sumocfg": data["sumocfg"],
+                            "control_alias": data.get("control_alias"),
+                            "steps": data.get("simulation_steps")}
+    return found
+
+
+SURGE_SCENARIOS = _discover_surge_scenarios([_HZ_SCENARIOS])
+for _alias, _info in SURGE_SCENARIOS.items():
+    CONFIGS.setdefault(_alias, _info["sumocfg"])
+
+
+def surge_control_alias(config_alias):
+    return (SURGE_SCENARIOS.get(config_alias) or {}).get("control_alias")
+
+
+def _steps_for(config_alias, steps):
+    """'from_scenario' takes each surge config's own simulation_steps."""
+    if steps != "from_scenario":
+        return steps
+    scenario_steps = (SURGE_SCENARIOS.get(config_alias) or {}).get("steps")
+    if not scenario_steps:
+        raise KeyError(f"config '{config_alias}' is not a surge scenario with "
+                       "simulation_steps; pass --steps explicitly")
+    return scenario_steps
+
+
 BLOCKAGES = {
     "none": None,
     "c1": f"{_HZ_SCENARIOS}/c1_through_west_2_2_600s.json",
@@ -237,6 +288,30 @@ EXPERIMENTS = {
         "intersection_config": "three_lane",
         "extra": {"llm_path": LLM_MODEL_PATH, "hide_blockage_info": True},
     },
+    # Demand-surge baselines (SURGE_SCENARIOS.md): FixedTime + MaxPressure on
+    # the 7200 s extended demand, control (hzreal_h2) vs network surge (S1) vs
+    # route surge through the C3 approach (S2), same seeds so each surge arm
+    # reads against its control pairwise.
+    "surge_baselines": {
+        "controllers": ["fixedtime", "maxpressure"],
+        "configs": ["hzreal_h2", "hzreal_s1_net150", "hzreal_s2_route150_2_3"],
+        "seeds": [1, 2, 3],
+        "blockages": ["none"],
+        "steps": 7200,
+        "intersection_config": "three_lane",
+    },
+    # Injected-surge families (SURGE_SCENARIOS.md, schema v2): pass the aliases
+    # printed by tools/make_surge_family.py via --configs. Each config runs for
+    # its own scenario's simulation_steps; read every arm against its
+    # control_alias (hzreal_h2_steady) at the same seed.
+    "surge_family": {
+        "controllers": ["fixedtime", "maxpressure"],
+        "configs": ["hzreal_h2_steady", "hzreal_cross_2_3"],
+        "seeds": [1, 2, 3],
+        "blockages": ["none"],
+        "steps": "from_scenario",
+        "intersection_config": "three_lane",
+    },
     # Clean-network benchmark suite (supersedes run_report_suite.py). CoLight
     "report_suite": {
         "controllers": ["fixedtime", "maxpressure", "colight", "advanced_colight"],
@@ -337,7 +412,8 @@ def expand_experiment(name, overrides=None):
             if llm_path:
                 combo_extra["llm_path"] = llm_path
             combos.append(make_combo(controller, config_alias, seed, blk,
-                                     steps, iconf, combo_extra))
+                                     _steps_for(config_alias, steps), iconf,
+                                     combo_extra))
     return combos
 
 
