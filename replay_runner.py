@@ -21,10 +21,13 @@ Run metadata lives in a sidecar `replay_meta.json` next to it:
         "llm_path": "..."   # ignored
     }
 
-Events are grouped by step on load. At each step, every listed intersection's
-traffic light state is force-set to `phase` via
-traci.trafficlight.setRedYellowGreenState. The SUMO config path and total step
-count are read from the sidecar -- no path/step overrides needed.
+Events are grouped by step on load. `step` is the SUMO sim time (seconds) at
+which the live run applied the change, i.e. the value of
+traci.simulation.getTime() right after that step's simulationStep(). The replay
+uses the same clock: after each simulationStep(), every event stamped with the
+current sim time is force-set via traci.trafficlight.setRedYellowGreenState.
+The SUMO config path and total step count are read from the sidecar -- no
+path/step overrides needed.
 
 Legacy records (a single replay_record.json with step keys and an in-band
 `original_run_details` block) are still accepted.
@@ -327,9 +330,14 @@ def main():
             if blockage_manager is not None:
                 blockage_manager.step(int(traci.simulation.getTime()))
 
-            # Apply any scheduled phase overrides for this exact step. A step may
-            # hold several events -- one per intersection that switched on it.
-            for event in phase_schedule.get(step, []):
+            # Events are stamped with SUMO's sim time as read by the live run
+            # right after its own simulationStep() (PhaseHandler ->
+            # env.get_current_step()), which is one ahead of the 0-based loop
+            # index. Keying on the same clock applies every change on the same
+            # tick the live run did; keying on `step` applied them 1 s late and
+            # the replay drifted from the original metrics.
+            sim_time = int(traci.simulation.getTime())
+            for event in phase_schedule.get(sim_time, []):
                 intersection_id = event["intersection_id"]
                 phase_state = event["phase"]
                 phase_name = event.get("phase_name", "")
@@ -339,12 +347,12 @@ def main():
                         intersection_id, phase_state
                     )
                     print(
-                        f"[step {step}] Applied phase '{phase_name}' "
+                        f"[t={sim_time}] Applied phase '{phase_name}' "
                         f"({phase_state}) to '{intersection_id}'"
                     )
                 except traci.exceptions.TraCIException as exc:
                     print(
-                        f"[step {step}] FAILED to set phase on "
+                        f"[t={sim_time}] FAILED to set phase on "
                         f"'{intersection_id}': {exc}",
                         file=sys.stderr,
                     )
