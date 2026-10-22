@@ -17,6 +17,7 @@ from sumo_env import SumoEnv
 from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
+from utils.oversaturation_indices import OversaturationIndices
 from utils.blockage_manager import BlockageManager, load_scenario
 from utils import llm_activity
 from utils.run_manifest import add_sumo_runtime, save_manifest, finalize_manifest
@@ -79,17 +80,20 @@ class RunContext:
     """Everything a runner needs after setup: dirs, recorders, a started env,
     and one PhaseHandler per intersection."""
 
-    def __init__(self, records_dir, env, recorder, replay_recorder, handlers):
+    def __init__(self, records_dir, env, recorder, replay_recorder, handlers,
+                 oversaturation):
         self.records_dir = records_dir
         self.env = env
         self.recorder = recorder
         self.replay_recorder = replay_recorder
         self.handlers = handlers
+        self.oversaturation = oversaturation
 
 
 def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
               seed=None, verbose_metrics=False, blockage_manager=None,
-              manifest=None, run_group=None, logs_dir=None):
+              manifest=None, run_group=None, logs_dir=None,
+              oversat_shadow=False, oversat_listener=None, extra_sumo_args=()):
     """Build the run stack every controller shares.
 
     run_meta is written to replay_meta.json (and the manifest, when given, to
@@ -116,9 +120,13 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
     env = SumoEnv(sumo_config=simulation_config, use_gui=use_gui,
                   phase_sequence_dir=phase_sequence_dir,
                   intersection_config=conf, output_dir=records_dir, seed=seed,
-                  blockage_manager=blockage_manager)
+                  blockage_manager=blockage_manager,
+                  extra_sumo_args=extra_sumo_args)
     env.start_simulation()
     recorder.record_initial_load()
+    oversaturation = OversaturationIndices(records_dir, blockage_manager,
+                                           shadow=oversat_shadow,
+                                           listener=oversat_listener)
     if manifest is not None:
         add_sumo_runtime(manifest, env.cmd)
         save_manifest(records_dir, manifest)
@@ -129,7 +137,8 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
                                       replay_recorder=replay_recorder)
         for intersection_id in env.get_intersections()
     }
-    return RunContext(records_dir, env, recorder, replay_recorder, handlers)
+    return RunContext(records_dir, env, recorder, replay_recorder, handlers,
+                      oversaturation)
 
 
 def _close_and_summarize(ctx, status):
@@ -139,6 +148,7 @@ def _close_and_summarize(ctx, status):
     raises. Shared by both control loops so the teardown order cannot drift.
     """
     try:
+        ctx.oversaturation.close()
         ctx.env.close()
         summary = ctx.recorder.save_final_summary()
     finally:
@@ -164,6 +174,9 @@ def run_control_loop(ctx, simulation_steps, decide):
         for step in range(simulation_steps):
             ctx.env.step()
             ctx.recorder.record_step_summary(step)
+            # Read-only; must run before handler.step() so it sees the signal
+            # state that governed the step just simulated.
+            ctx.oversaturation.update(ctx.env.get_current_step())
             llm_activity.set_step(step)
             for intersection_id, handler in ctx.handlers.items():
                 handler.step()
@@ -202,6 +215,9 @@ def run_control_loop_batched(ctx, simulation_steps, decide_batch):
         for step in range(simulation_steps):
             ctx.env.step()
             ctx.recorder.record_step_summary(step)
+            # Read-only; must run before handler.step() so it sees the signal
+            # state that governed the step just simulated.
+            ctx.oversaturation.update(ctx.env.get_current_step())
             llm_activity.set_step(step)
             pending = []
             for intersection_id, handler in ctx.handlers.items():

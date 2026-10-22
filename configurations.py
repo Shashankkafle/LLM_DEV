@@ -286,6 +286,10 @@ NETWORK_TIMESERIES_FILENAME = "network_timeseries.csv"
 # written when the route file carries surge_<name>_<k> vehicles).
 EDGE_TIMESERIES_FILENAME = "edge_timeseries.csv"
 SURGE_TIMESERIES_FILENAME = "surge_timeseries.csv"
+# TOSI/SOSI per lane-green and movement (utils/oversaturation_indices.py),
+# plus the opt-in per-step shadow log of their raw lane inputs.
+OVERSATURATION_INDICES_FILENAME = "oversaturation_indices.csv"
+OVERSATURATION_SHADOW_FILENAME = "oversaturation_shadow.csv"
 DECISIONS_FILENAME = "decisions.jsonl"
 PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.jsonl"
 

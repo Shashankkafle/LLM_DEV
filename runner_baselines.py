@@ -135,6 +135,10 @@ def parse_args():
     )
     parser.add_argument("--logs_dir", type=str, default=None,
                         help="Write the run directory under this root instead of logs/.")
+    parser.add_argument("--oversat_shadow", action="store_true",
+                        help="Also write oversaturation_shadow.csv: per-step "
+                             "halted and exit counts for every signalized lane "
+                             "(the raw inputs behind TOSI/SOSI).")
     return parser.parse_args()
 
 
@@ -157,7 +161,8 @@ def main(args):
     ctx = setup_run(conf, test_name, args.simulation_config, run_meta,
                     use_gui=args.use_gui, seed=args.seed,
                     blockage_manager=blockage_manager, manifest=manifest,
-                    run_group=args.run_group, logs_dir=args.logs_dir)
+                    run_group=args.run_group, logs_dir=args.logs_dir,
+                    oversat_shadow=getattr(args, "oversat_shadow", False))
     controller = build_controller(args.controller, conf, list(ctx.handlers))
 
     print(f"Controller    : {args.controller}")

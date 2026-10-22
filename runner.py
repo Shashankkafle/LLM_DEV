@@ -43,6 +43,10 @@ def parse_args():
                              "(needs OPENROUTER_API_KEY). Never a URL -- moving "
                              "the server must not change run identity.")
     parser.add_argument("--use_gui", action="store_true")
+    parser.add_argument("--oversat_shadow", action="store_true",
+                        help="Also write oversaturation_shadow.csv: per-step "
+                             "halted and exit counts for every signalized lane "
+                             "(the raw inputs behind TOSI/SOSI).")
     parser.add_argument("--seed", type=int, default=None,
                         help="SUMO random seed. Default keeps SUMO's fixed "
                              "default (deterministic reruns).")
@@ -223,7 +227,8 @@ def main(args):
     ctx = setup_run(conf, args.test_name, args.simulation_config, run_meta,
                     use_gui=args.use_gui, seed=args.seed, verbose_metrics=True,
                     blockage_manager=blockage_manager, manifest=manifest,
-                    run_group=args.run_group, logs_dir=args.logs_dir)
+                    run_group=args.run_group, logs_dir=args.logs_dir,
+                    oversat_shadow=getattr(args, "oversat_shadow", False))
     llm_activity.start(ctx.records_dir, args.logs_dir, {
         "experiment": args.run_group,
         "slug": args.test_name,

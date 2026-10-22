@@ -20,7 +20,7 @@ movement_to_approach = {
 class SumoEnv:
     def __init__(self, sumo_config, phase_sequence_dir=None, use_gui=False,
                  intersection_config=INTERSECTION_CONFIG, output_dir=None,
-                 seed=None, blockage_manager=None):
+                 seed=None, blockage_manager=None, extra_sumo_args=()):
         self.sumo_config = sumo_config
         self.use_gui = use_gui
         self.intersection_config = intersection_config
@@ -49,6 +49,7 @@ class SumoEnv:
         # None keeps SUMO's fixed default seed (deterministic reruns).
         if seed is not None:
             self.cmd += ["--seed", str(seed)]
+        self.cmd += list(extra_sumo_args)
 
     def _build_approach_mapping(self):
         mapping = {j: {} for j in traci.trafficlight.getIDList()}

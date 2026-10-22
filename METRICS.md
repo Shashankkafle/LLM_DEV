@@ -250,6 +250,51 @@ injects the blockage physically but keeps BOTH sections out of the prompt: the
 core matrix for any adaptation claim is LLM-with-info vs LLM-without-info vs
 baselines, all on the same scenario and seed.
 
+## Oversaturation indices (`oversaturation_indices.csv`)
+
+Written by every FixedTime/MaxPressure/LLM run (`utils/oversaturation_indices.py`,
+hooked into `runner_common`'s loops; CoLight and replay loops are not hooked).
+The module only reads TraCI subscriptions, and a test pins that phase sequences
+and tripinfo are byte-identical with it live or stubbed.
+`--oversat_shadow` adds `oversaturation_shadow.csv` (per step, per lane:
+halted and exit counts).
+
+- **Green interval** (per lane): the maximal run of seconds in which any of
+  the lane's links is `G`/`g`. **All-red onset**: the first second after it in
+  which none of the lane's links is `G`/`g`/`y`.
+- **TOSI** (per lane-green) = |H ∩ R| × 2.0 s / green_s, clamped to [0, 1].
+  H = vehicles halted (< 0.1 m/s) on the lane when green came on, and R =
+  vehicles on the lane at all-red onset. `discharged` = |H \ R|. When the lane
+  had an active blockage at any point from green to all-red, TOSI is left
+  empty (`blocked_flag` = 1).
+- **SOSI** (per movement = lane → target lane) is the share of green seconds
+  after the first 3 in which all three rules hold:
+  - (a) a vehicle on the lane is halted within 15 m of the stop line;
+  - (b) no vehicle left the lane (set difference, so a flat count can still
+    hide an exit);
+  - (c) a vehicle on the target lane is halted within 15 m of its entry.
+
+  SOSI is empty when green_s ≤ 3.
+- **ratio_start / ratio_end** = halted count / floor(lane length / 7.5), at
+  green start and at all-red onset.
+
+**Timing.** The hook runs after `simulationStep`, so the signal state it reads
+governed the previous second. Boundaries are labelled with that second, and
+H, R and the ratios come from the vehicle snapshot taken at that instant. If
+H were sampled one second later, the head of the queue would already be
+moving.
+
+**Obstacle and right turns.** Unlike SUMO's lane halting numbers, every count
+here excludes the obstacle vehicle, filtered by id prefix. Right-turn lanes
+are `g` in every state, including all-red, so they never complete a green and
+get no rows. Behind a c3-style obstacle 10 m from the stop line, the queue
+head stands about 17 m back, so rule (a) cannot fire on the blocked lane
+itself. Its SOSI stays 0, and what the blockage does to that lane shows up in
+TOSI (suppressed) and in the ratios.
+
+`tools/inspect_indices.py` replays the computation in sumo-gui, with the
+arithmetic printed per green, for checking the numbers by eye.
+
 ## Which number for which comparison
 
 - Against LLMTSCS/paper tables: `cityflow_clock_att_s`,
