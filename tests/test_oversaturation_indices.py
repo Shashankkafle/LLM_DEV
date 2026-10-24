@@ -260,9 +260,10 @@ def sumo_output_body(path):
     return text[text.index("-->"):]
 
 
-def run_in_process(logs_dir, stub_indices):
+def run_in_process(logs_dir, stub_indices, movement_flags=False):
     """runner_baselines.main on c3, optionally with the indices replaced by a
-    no-op (no subscriptions, no reads) to get the untouched reference."""
+    no-op (no subscriptions, no reads) to get the untouched reference, or with
+    the movement flags listening on top of the indices."""
     import runner_baselines
     import runner_common
 
@@ -285,10 +286,31 @@ def run_in_process(logs_dir, stub_indices):
             simulation_steps=C3_STEPS, simulation_config=CONFIGS["hzreal"],
             use_gui=False, seed=1, blockage_scenario=BLOCKAGES["c3"],
             intersection_config="three_lane", logs_dir=str(logs_dir),
-            oversat_shadow=False))
+            oversat_shadow=False, movement_flags=movement_flags,
+            theta_in=None, theta_out=None, n_in=None, k_flag=None))
     finally:
         runner_common.OversaturationIndices = real
     return sorted(Path(logs_dir).glob("ft_*"))[-1]
+
+
+def assert_same_control(run, reference):
+    phase_files = sorted(p.name for p in (run / "phase_sequences").iterdir())
+    assert phase_files
+    for name in phase_files:
+        assert ((run / "phase_sequences" / name).read_bytes()
+                == (reference / "phase_sequences" / name).read_bytes()), name
+    assert (run / "network_timeseries.csv").read_bytes() == \
+        (reference / "network_timeseries.csv").read_bytes()
+    assert sumo_output_body(run / "tripinfo.xml") == sumo_output_body(reference / "tripinfo.xml")
+
+
+def read_flag_rows(run_dir):
+    with open(run_dir / "movement_flags.csv", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def movements(rows):
+    return {(row["lane"], row["target_lane"]) for row in rows}
 
 
 def test_smoke_indices_do_not_change_control():
@@ -296,18 +318,17 @@ def test_smoke_indices_do_not_change_control():
     out_dir = artifact_dir("test_smoke_indices_do_not_change_control")
     live = run_in_process(out_dir / "live", stub_indices=False)
     reference = run_in_process(out_dir / "stub", stub_indices=True)
-    phase_files = sorted(p.name for p in (live / "phase_sequences").iterdir())
-    assert phase_files
-    for name in phase_files:
-        assert ((live / "phase_sequences" / name).read_bytes()
-                == (reference / "phase_sequences" / name).read_bytes()), name
-    assert (live / "network_timeseries.csv").read_bytes() == \
-        (reference / "network_timeseries.csv").read_bytes()
-    assert sumo_output_body(live / "tripinfo.xml") == sumo_output_body(reference / "tripinfo.xml")
+    with_flags = run_in_process(out_dir / "flags", stub_indices=False, movement_flags=True)
+    assert_same_control(live, reference)
+    assert_same_control(with_flags, reference)
     rows = read_rows(live)
     blocked = [row for row in rows if row["blocked_flag"] == "1"]
     assert blocked and all(row["lane"] == "road_2_4_3_1" and row["tosi"] == ""
                            for row in blocked)
+    assert not (live / "movement_flags.csv").exists()
+    flag_rows = read_flag_rows(with_flags)
+    assert movements(flag_rows) == movements(read_rows(with_flags))
+    assert len(flag_rows) == len(read_rows(with_flags))
 
 
 if __name__ == "__main__":

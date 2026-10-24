@@ -216,12 +216,15 @@ class LaneGreenTracker:
     each completed green into an IntervalResult. Fed synthetic snapshots in
     tests, live ones by OversaturationIndices."""
 
-    def __init__(self, tls, lane, lane_length, link_indices, targets):
+    def __init__(self, tls, lane, lane_length, link_indices, targets,
+                 target_link_indices=None):
         self.tls = tls
         self.lane = lane
         self.lane_length = lane_length
         self.link_indices = link_indices
         self.targets = targets
+        # target lane -> every signal link index that reaches it from this lane
+        self.target_link_indices = target_link_indices or {}
         self.capacity = storage_capacity(lane_length)
         self.open_green = None
         self.completed_greens = 0
@@ -340,13 +343,22 @@ def check_against_lane_links(trackers):
 def build_trackers(movements):
     by_lane = {}
     for tls, lane, target_lane, link_index in movements:
-        entry = by_lane.setdefault(lane, {"tls": tls, "links": [], "targets": []})
+        entry = by_lane.setdefault(lane, {"tls": tls, "links": [], "targets": [],
+                                          "target_links": {}})
         entry["links"].append(link_index)
         if target_lane not in entry["targets"]:
             entry["targets"].append(target_lane)
+        entry["target_links"].setdefault(target_lane, []).append(link_index)
     return [LaneGreenTracker(entry["tls"], lane, traci.lane.getLength(lane),
-                             entry["links"], entry["targets"])
+                             entry["links"], entry["targets"], entry["target_links"])
             for lane, entry in by_lane.items()]
+
+
+def lanes_by_tls(trackers):
+    tls_lanes = {}
+    for tracker in trackers:
+        tls_lanes.setdefault(tracker.tls, []).append(tracker.lane)
+    return tls_lanes
 
 
 class OversaturationIndices:
@@ -363,6 +375,7 @@ class OversaturationIndices:
         self.trackers = build_trackers(read_controlled_movements())
         check_against_lane_links(self.trackers)
         self.tls_ids = sorted({tracker.tls for tracker in self.trackers})
+        self.tls_lanes = lanes_by_tls(self.trackers)
         self.lane_lengths = self._observed_lane_lengths()
         self._prev = {lane: EMPTY_SNAPSHOT for lane in self.lane_lengths}
         self._subscribe_lanes_and_signals()

@@ -290,6 +290,9 @@ SURGE_TIMESERIES_FILENAME = "surge_timeseries.csv"
 # plus the opt-in per-step shadow log of their raw lane inputs.
 OVERSATURATION_INDICES_FILENAME = "oversaturation_indices.csv"
 OVERSATURATION_SHADOW_FILENAME = "oversaturation_shadow.csv"
+# Per-movement overflow flags with hysteresis, one row per movement per closed
+# green (utils/movement_flags.py, opt-in via --movement_flags).
+MOVEMENT_FLAGS_FILENAME = "movement_flags.csv"
 DECISIONS_FILENAME = "decisions.jsonl"
 PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.jsonl"
 

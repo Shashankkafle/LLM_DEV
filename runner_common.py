@@ -18,6 +18,7 @@ from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
 from utils.oversaturation_indices import OversaturationIndices
+from utils.movement_flags import FlagConfig, MovementFlags
 from utils.blockage_manager import BlockageManager, load_scenario
 from utils import llm_activity
 from utils.run_manifest import add_sumo_runtime, save_manifest, finalize_manifest
@@ -41,6 +42,35 @@ def build_blockage_manager(scenario_path):
     scenario = load_scenario(scenario_path)
     return scenario, BlockageManager(scenario["blockages"],
                                      scenario_name=scenario["scenario_name"])
+
+
+def add_movement_flag_args(parser):
+    """The --movement_flags CLI, shared by every runner that uses setup_run.
+    Threshold defaults are None so FlagConfig stays the one place they live."""
+    parser.add_argument("--movement_flags", action="store_true",
+                        help="Also write movement_flags.csv: per-movement "
+                             "oversaturation flags with hysteresis, built on "
+                             "TOSI/SOSI. Observer only; control is unchanged.")
+    parser.add_argument("--theta_in", type=float, default=None,
+                        help="Queue/storage ratio a flag needs to raise.")
+    parser.add_argument("--theta_out", type=float, default=None,
+                        help="Ratio a green must fall below to count as clean "
+                             "(<= theta_in - 0.10).")
+    parser.add_argument("--n_in", type=int, default=None,
+                        help="Consecutive entry greens needed to raise a flag.")
+    parser.add_argument("--k_flag", type=int, default=None,
+                        help="Consecutive clean greens needed to clear a flag.")
+
+
+def movement_flag_config_from_args(args):
+    """FlagConfig when --movement_flags is set, else None. getattr because
+    tests build the args Namespace by hand."""
+    if not getattr(args, "movement_flags", False):
+        return None
+    overrides = {name: getattr(args, name, None)
+                 for name in ("theta_in", "theta_out", "n_in", "k_flag")}
+    return FlagConfig(**{name: value for name, value in overrides.items()
+                         if value is not None})
 
 
 def create_run_dirs(test_name, run_group=None, logs_dir=None):
@@ -81,25 +111,33 @@ class RunContext:
     and one PhaseHandler per intersection."""
 
     def __init__(self, records_dir, env, recorder, replay_recorder, handlers,
-                 oversaturation):
+                 oversaturation, movement_flags=None):
         self.records_dir = records_dir
         self.env = env
         self.recorder = recorder
         self.replay_recorder = replay_recorder
         self.handlers = handlers
         self.oversaturation = oversaturation
+        self.movement_flags = movement_flags
 
 
 def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
               seed=None, verbose_metrics=False, blockage_manager=None,
               manifest=None, run_group=None, logs_dir=None,
-              oversat_shadow=False, oversat_listener=None, extra_sumo_args=()):
+              oversat_shadow=False, oversat_listener=None, extra_sumo_args=(),
+              movement_flag_config=None):
     """Build the run stack every controller shares.
 
     run_meta is written to replay_meta.json (and the manifest, when given, to
     run_manifest.json) up front so a crashed run still leaves enough on disk
     to be replayed and re-scored.
+
+    movement_flag_config (a FlagConfig) turns on MovementFlags, which takes
+    the single oversaturation listener slot.
     """
+    if movement_flag_config is not None and oversat_listener is not None:
+        raise ValueError("movement flags and oversat_listener both need the "
+                         "single OversaturationIndices listener slot")
     records_dir, phase_sequence_dir = create_run_dirs(test_name, run_group,
                                                       logs_dir)
     if manifest is not None:
@@ -124,6 +162,10 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
                   extra_sumo_args=extra_sumo_args)
     env.start_simulation()
     recorder.record_initial_load()
+    movement_flags = None
+    if movement_flag_config is not None:
+        movement_flags = MovementFlags(movement_flag_config, records_dir)
+        oversat_listener = movement_flags
     oversaturation = OversaturationIndices(records_dir, blockage_manager,
                                            shadow=oversat_shadow,
                                            listener=oversat_listener)
@@ -138,7 +180,7 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
         for intersection_id in env.get_intersections()
     }
     return RunContext(records_dir, env, recorder, replay_recorder, handlers,
-                      oversaturation)
+                      oversaturation, movement_flags)
 
 
 def _close_and_summarize(ctx, status):
@@ -149,6 +191,8 @@ def _close_and_summarize(ctx, status):
     """
     try:
         ctx.oversaturation.close()
+        if ctx.movement_flags is not None:
+            ctx.movement_flags.close()
         ctx.env.close()
         summary = ctx.recorder.save_final_summary()
     finally:
@@ -171,7 +215,7 @@ def run_control_loop(ctx, simulation_steps, decide):
     """
     status = "crashed"
     try:
-        for step in range(simulation_steps):
+        for step in range(simulation_steps): 
             ctx.env.step()
             ctx.recorder.record_step_summary(step)
             # Read-only; must run before handler.step() so it sees the signal
