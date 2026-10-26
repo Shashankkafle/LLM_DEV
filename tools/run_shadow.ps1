@@ -1,5 +1,5 @@
 ﻿<#
-Launch a shadow-tuning batch (fixedtime + maxpressure, --movement_flags --flag_rule v2)
+Launch a shadow-tuning batch (fixedtime + maxpressure, --movement_flags)
 over every scenario row x seed, each run in its own PowerShell window that stays open
 after the run ends.
 
@@ -22,7 +22,6 @@ Set-Location $RepoRoot
 
 $DataDir = "dataset/llm_light/Hangzhou/4_4"
 $LogDir = Join-Path $RepoRoot "logs\$RunGroup"
-$FlagRule = "v2"
 
 function New-ScenarioRows {
     $c3 = "--blockage_scenario $DataDir/scenarios/c3_through_north_2_3_1200s.json"
@@ -48,7 +47,7 @@ function New-RunList {
             foreach ($controller in $controllers) {
                 $testName = "$($controller.Prefix)_$($row.Name)_s$seed"
                 $command = "python runner_baselines.py --controller $($controller.Name)" +
-                    " --movement_flags --flag_rule $FlagRule" +
+                    " --movement_flags" +
                     " --run_group $RunGroup --test_name $testName" +
                     " --simulation_config $DataDir/$($row.Config)" +
                     " --simulation_steps $($row.Steps) --seed $seed"
@@ -136,17 +135,9 @@ function Test-CoreBudget {
     }
 }
 
-# Fail here rather than in every window if the runner doesn't know --flag_rule.
-function Assert-RunnerSupportsFlagRule {
-    $help = cmd /c "python runner_baselines.py --help 2>&1" | Out-String
-    if ($help -notmatch "--flag_rule") {
-        throw "runner_baselines.py does not accept --flag_rule; nothing launched."
-    }
-}
-
 $runs = @(New-RunList)
 
-Write-Host "Run group: $RunGroup, seeds: $($Seeds -join ','), flag rule: $FlagRule, runs: $($runs.Count)"
+Write-Host "Run group: $RunGroup, seeds: $($Seeds -join ','), runs: $($runs.Count)"
 Test-CoreBudget
 $runs | Format-Table TestName, Controller, Seed, Config, Steps, Extra -AutoSize | Out-String -Width 400 | Write-Host
 
@@ -156,7 +147,6 @@ if ($DryRun) {
     return
 }
 
-Assert-RunnerSupportsFlagRule
 New-Item -ItemType Directory -Force $LogDir | Out-Null
 
 $running = @()
