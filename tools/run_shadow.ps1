@@ -1,14 +1,18 @@
 ﻿<#
-Launch the 14-run shadow_tuning_v2 batch (fixedtime + maxpressure, --movement_flags),
-each run in its own PowerShell window that stays open after the run ends.
+Launch a shadow-tuning batch (fixedtime + maxpressure, --movement_flags --flag_rule v2)
+over every scenario row x seed, each run in its own PowerShell window that stays open
+after the run ends.
 
-    powershell -ExecutionPolicy Bypass -File tools\run_shadow_v2.ps1 [-MaxParallel 4] [-DryRun]
+    powershell -ExecutionPolicy Bypass -File tools\run_shadow.ps1 -RunGroup shadow_tuning_v3 -Seeds 1,2 [-MaxParallel 8] [-DryRun]
 
-Each window tees its output to logs\shadow_tuning_v2\<test_name>.console.log and, on
-exit, writes <test_name>.done (exit code + seconds) so this launcher can track it.
+Each window tees its output to logs\<RunGroup>\<test_name>.console.log (test_name ends
+in _s<seed>) and, on exit, writes <test_name>.done (exit code + seconds) so this
+launcher can track it.
 #>
 param(
-    [int]$MaxParallel = 4,
+    [Parameter(Mandatory = $true)][string]$RunGroup,
+    [Parameter(Mandatory = $true)][int[]]$Seeds,
+    [int]$MaxParallel = 8,
     [switch]$DryRun
 )
 
@@ -16,36 +20,17 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
-$RunGroup = "shadow_tuning_v2"
 $DataDir = "dataset/llm_light/Hangzhou/4_4"
 $LogDir = Join-Path $RepoRoot "logs\$RunGroup"
-$S2Scenario = "$DataDir/scenarios/surge_s2_route150_2_3.json"
-$S2Config = "anon_4_4_hangzhou_real_s2_route150_2_3.sumocfg"
+$FlagRule = "v2"
 
-function Read-S2Scenario {
-    Get-Content (Join-Path $RepoRoot $S2Scenario) -Raw | ConvertFrom-Json
-}
-
-# The s2 json is the v1 schema: no top-level horizon/surges, only "generator".
-function Get-S2Steps($scenario) {
-    if ($null -ne $scenario.horizon) { return [int]$scenario.horizon }
-    if ($null -ne $scenario.generator.horizon) { return [int]$scenario.generator.horizon }
-    return [int]$scenario.simulation_steps
-}
-
-function Get-S2SurgesBlock($scenario) {
-    if ($null -ne $scenario.surges) { return $scenario.surges }
-    return $scenario.generator
-}
-
-function New-ScenarioRows($s2Steps) {
+function New-ScenarioRows {
     $c3 = "--blockage_scenario $DataDir/scenarios/c3_through_north_2_3_1200s.json"
     $c4 = "--blockage_scenario $DataDir/scenarios/c4_two_lane_west_2_2_1200s.json"
     # Longest first so the 9000-step runs don't finish last.
     @(
         @{ Name = "cross_r1200"; Config = "anon_4_4_hangzhou_real_cross_2_3_r1200.sumocfg"; Steps = 9000; Extra = "" }
         @{ Name = "h2_steady"; Config = "anon_4_4_hangzhou_real_h2_steady.sumocfg"; Steps = 7200; Extra = "" }
-        @{ Name = "route_s2"; Config = $S2Config; Steps = $s2Steps; Extra = "" }
         @{ Name = "cross_1h"; Config = "anon_4_4_hangzhou_real_cross_2_3_1h.sumocfg"; Steps = 3600; Extra = "" }
         @{ Name = "hzreal_none"; Config = "anon_4_4_hangzhou_real.sumocfg"; Steps = 3600; Extra = "" }
         @{ Name = "hzreal_c3"; Config = "anon_4_4_hangzhou_real.sumocfg"; Steps = 3600; Extra = $c3 }
@@ -53,26 +38,30 @@ function New-ScenarioRows($s2Steps) {
     )
 }
 
-function New-RunList($s2Steps) {
+function New-RunList {
     $controllers = @(
         @{ Name = "fixedtime"; Prefix = "ft" }
         @{ Name = "maxpressure"; Prefix = "mp" }
     )
-    foreach ($row in New-ScenarioRows $s2Steps) {
-        foreach ($controller in $controllers) {
-            $testName = "$($controller.Prefix)_$($row.Name)"
-            $command = "python runner_baselines.py --controller $($controller.Name) --movement_flags" +
-                " --run_group $RunGroup --test_name $testName" +
-                " --simulation_config $DataDir/$($row.Config)" +
-                " --simulation_steps $($row.Steps) --seed 1"
-            if ($row.Extra) { $command += " $($row.Extra)" }
-            [pscustomobject]@{
-                TestName = $testName
-                Controller = $controller.Name
-                Config = $row.Config
-                Steps = $row.Steps
-                Extra = $(if ($row.Extra) { $row.Extra } else { "-" })
-                Command = $command
+    foreach ($row in New-ScenarioRows) {
+        foreach ($seed in $Seeds) {
+            foreach ($controller in $controllers) {
+                $testName = "$($controller.Prefix)_$($row.Name)_s$seed"
+                $command = "python runner_baselines.py --controller $($controller.Name)" +
+                    " --movement_flags --flag_rule $FlagRule" +
+                    " --run_group $RunGroup --test_name $testName" +
+                    " --simulation_config $DataDir/$($row.Config)" +
+                    " --simulation_steps $($row.Steps) --seed $seed"
+                if ($row.Extra) { $command += " $($row.Extra)" }
+                [pscustomobject]@{
+                    TestName = $testName
+                    Controller = $controller.Name
+                    Seed = $seed
+                    Config = $row.Config
+                    Steps = $row.Steps
+                    Extra = $(if ($row.Extra) { $row.Extra } else { "-" })
+                    Command = $command
+                }
             }
         }
     }
@@ -147,14 +136,19 @@ function Test-CoreBudget {
     }
 }
 
-$s2ScenarioJson = Read-S2Scenario
-$runs = @(New-RunList (Get-S2Steps $s2ScenarioJson))
+# Fail here rather than in every window if the runner doesn't know --flag_rule.
+function Assert-RunnerSupportsFlagRule {
+    $help = cmd /c "python runner_baselines.py --help 2>&1" | Out-String
+    if ($help -notmatch "--flag_rule") {
+        throw "runner_baselines.py does not accept --flag_rule; nothing launched."
+    }
+}
 
-Write-Host "route_s2 scenario surges block ($S2Scenario):"
-Write-Host (Get-S2SurgesBlock $s2ScenarioJson | ConvertTo-Json -Depth 10)
-Write-Host ""
+$runs = @(New-RunList)
+
+Write-Host "Run group: $RunGroup, seeds: $($Seeds -join ','), flag rule: $FlagRule, runs: $($runs.Count)"
 Test-CoreBudget
-$runs | Format-Table TestName, Controller, Config, Steps, Extra -AutoSize | Out-String -Width 400 | Write-Host
+$runs | Format-Table TestName, Controller, Seed, Config, Steps, Extra -AutoSize | Out-String -Width 400 | Write-Host
 
 if ($DryRun) {
     Write-Host "Dry run: commands that would be launched, in order:"
@@ -162,9 +156,7 @@ if ($DryRun) {
     return
 }
 
-if (-not (Test-Path (Join-Path $DataDir $S2Config))) {
-    throw "Missing $DataDir/$S2Config"
-}
+Assert-RunnerSupportsFlagRule
 New-Item -ItemType Directory -Force $LogDir | Out-Null
 
 $running = @()

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+	<input>
+		<net-file value="roadnet.net.xml"/>
+		<route-files value="surge/anon_4_4_hangzhou_real_cross_2_3_1h.rou.xml"/>
+	</input>
+	<time>
+		<begin value="0"/>
+		<end value="3600"/>
+	</time>
+</configuration>
