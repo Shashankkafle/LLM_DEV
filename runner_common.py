@@ -19,6 +19,7 @@ from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
 from utils.oversaturation_indices import OversaturationIndices
 from utils.movement_flags import FLAG_COLUMNS, FlagConfig, MovementFlags
+from utils.regime import Diagnoser, nominal_cycle_s
 from utils.blockage_manager import BlockageManager, load_scenario
 from utils import llm_activity
 from utils.run_manifest import add_sumo_runtime, save_manifest, finalize_manifest
@@ -111,7 +112,7 @@ class RunContext:
     and one PhaseHandler per intersection."""
 
     def __init__(self, records_dir, env, recorder, replay_recorder, handlers,
-                 oversaturation, movement_flags=None):
+                 oversaturation, movement_flags=None, diagnoser=None):
         self.records_dir = records_dir
         self.env = env
         self.recorder = recorder
@@ -119,6 +120,15 @@ class RunContext:
         self.handlers = handlers
         self.oversaturation = oversaturation
         self.movement_flags = movement_flags
+        self.diagnoser = diagnoser
+
+    def update_observers(self):
+        """Read-only per-step observers. Must run before handler.step() so they
+        see the signal state that governed the step just simulated."""
+        t = self.env.get_current_step()
+        self.oversaturation.update(t)
+        if self.diagnoser is not None:
+            self.diagnoser.update(t)
 
 
 def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
@@ -132,8 +142,9 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
     run_manifest.json) up front so a crashed run still leaves enough on disk
     to be replayed and re-scored.
 
-    movement_flag_config (a FlagConfig) turns on MovementFlags, which takes
-    the single oversaturation listener slot.
+    movement_flag_config (a FlagConfig) turns on MovementFlags and the regime
+    Diagnoser in front of it, which takes the single oversaturation listener
+    slot.
     """
     if movement_flag_config is not None and oversat_listener is not None:
         raise ValueError("movement flags and oversat_listener both need the "
@@ -165,9 +176,12 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
     env.start_simulation()
     recorder.record_initial_load()
     movement_flags = None
+    diagnoser = None
     if movement_flag_config is not None:
         movement_flags = MovementFlags(movement_flag_config, records_dir)
-        oversat_listener = movement_flags
+        diagnoser = Diagnoser(movement_flags, nominal_cycle_s(conf), records_dir)
+        recorder.diagnoser = diagnoser
+        oversat_listener = diagnoser
     oversaturation = OversaturationIndices(records_dir, blockage_manager,
                                            shadow=oversat_shadow,
                                            listener=oversat_listener)
@@ -182,7 +196,7 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
         for intersection_id in env.get_intersections()
     }
     return RunContext(records_dir, env, recorder, replay_recorder, handlers,
-                      oversaturation, movement_flags)
+                      oversaturation, movement_flags, diagnoser)
 
 
 def _close_and_summarize(ctx, status):
@@ -193,6 +207,8 @@ def _close_and_summarize(ctx, status):
     """
     try:
         ctx.oversaturation.close()
+        if ctx.diagnoser is not None:
+            ctx.diagnoser.close()
         if ctx.movement_flags is not None:
             ctx.movement_flags.close()
         ctx.env.close()
@@ -220,9 +236,7 @@ def run_control_loop(ctx, simulation_steps, decide):
         for step in range(simulation_steps): 
             ctx.env.step()
             ctx.recorder.record_step_summary(step)
-            # Read-only; must run before handler.step() so it sees the signal
-            # state that governed the step just simulated.
-            ctx.oversaturation.update(ctx.env.get_current_step())
+            ctx.update_observers()
             llm_activity.set_step(step)
             for intersection_id, handler in ctx.handlers.items():
                 handler.step()
@@ -261,9 +275,7 @@ def run_control_loop_batched(ctx, simulation_steps, decide_batch):
         for step in range(simulation_steps):
             ctx.env.step()
             ctx.recorder.record_step_summary(step)
-            # Read-only; must run before handler.step() so it sees the signal
-            # state that governed the step just simulated.
-            ctx.oversaturation.update(ctx.env.get_current_step())
+            ctx.update_observers()
             llm_activity.set_step(step)
             pending = []
             for intersection_id, handler in ctx.handlers.items():

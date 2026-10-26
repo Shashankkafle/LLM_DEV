@@ -65,6 +65,9 @@ class MetricsRecorder:
         # can tell controllers and ablation arms apart, and stamped into every
         # decision record.
         self.run_info = run_info or {}
+        # Set by setup_run when movement flags are on; stamps the current
+        # regime into every decision record so decisions can be joined to it.
+        self.diagnoser = None
         self.run_started = time.time()
         self.run_started_at = datetime.now().isoformat(timespec="seconds")
 
@@ -710,6 +713,8 @@ class MetricsRecorder:
         self._append_decision(intersection_id, decision_event)
 
     def _append_decision(self, intersection_id, decision_event):
+        if self.diagnoser is not None:
+            decision_event["regime"] = self.diagnoser.regime
         decision_log_file = self.run_dir / f"{intersection_id}/{DECISIONS_FILENAME}"
         decision_log_file.parent.mkdir(parents=True, exist_ok=True)
         with open(decision_log_file, "a") as f:
