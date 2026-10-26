@@ -47,6 +47,8 @@ def interval(index, tosi=0.0, sosi=0.0, ratio=0.0, blocked=False, other_sosi=0.0
         ratio_start=0.0, ratio_end=ratio,
         blocked_steps={TARGET: 0, OTHER_TARGET: 0},
         sosi={TARGET: sosi, OTHER_TARGET: other_sosi},
+        stop_halted_steps=0, no_exit_steps=0,
+        target_halted_steps={TARGET: 0, OTHER_TARGET: 0},
     )
 
 

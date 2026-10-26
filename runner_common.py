@@ -18,7 +18,7 @@ from utils.phase_handler import PhaseHandler
 from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
 from utils.oversaturation_indices import OversaturationIndices
-from utils.movement_flags import FlagConfig, MovementFlags
+from utils.movement_flags import FLAG_COLUMNS, FlagConfig, MovementFlags
 from utils.blockage_manager import BlockageManager, load_scenario
 from utils import llm_activity
 from utils.run_manifest import add_sumo_runtime, save_manifest, finalize_manifest
@@ -140,6 +140,8 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
                          "single OversaturationIndices listener slot")
     records_dir, phase_sequence_dir = create_run_dirs(test_name, run_group,
                                                       logs_dir)
+    if manifest is not None and movement_flag_config is not None:
+        manifest["movement_flags_columns"] = list(FLAG_COLUMNS)
     if manifest is not None:
         save_manifest(records_dir, manifest)
     # Copy the scenario into the run dir so the run stays reproducible even if

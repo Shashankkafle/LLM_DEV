@@ -29,6 +29,7 @@ FLAG_COLUMNS = [
     "t_close", "tls", "lane", "target_lane", "link_indices", "tosi", "sosi",
     "ratio_end", "halted_count_end", "discharged", "blocked", "skipped",
     "entry_count", "clean_count", "active", "raised_at",
+    "held_over", "ratio_start", "sosi_c1", "sosi_c2", "sosi_c3",
 ]
 
 
@@ -110,7 +111,10 @@ def flag_row(result, target, link_indices, skipped, state):
             format_value(result.ratio_end), result.halted_count_end,
             result.discharged, int(result.blocked_flag), int(skipped),
             state.entry_count, state.clean_count, int(state.active),
-            format_value(state.raised_at)]
+            format_value(state.raised_at),
+            result.held_over, format_value(result.ratio_start),
+            result.stop_halted_steps, result.no_exit_steps,
+            result.target_halted_steps[target]]
 
 
 class MovementFlags:

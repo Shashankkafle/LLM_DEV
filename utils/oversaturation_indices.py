@@ -185,6 +185,11 @@ class IntervalResult:
     ratio_end: object
     blocked_steps: dict
     sosi: dict
+    # SOSI's rules counted one at a time over the same green seconds:
+    # (a) and (b) are lane-level, (c) is per target lane.
+    stop_halted_steps: int
+    no_exit_steps: int
+    target_halted_steps: dict
 
     @property
     def green_s(self):
@@ -200,8 +205,11 @@ class OpenGreen:
     green_start: int
     halted_at_start: frozenset
     blocked_steps: dict
+    target_halted_steps: dict
     blocked_flag: bool
     green_end: object = None
+    stop_halted_steps: int = 0
+    no_exit_steps: int = 0
 
 
 @dataclass
@@ -251,6 +259,7 @@ class LaneGreenTracker:
     def _start(self, tau, prev, lane_blocked):
         return OpenGreen(green_start=tau, halted_at_start=prev.halted_ids,
                          blocked_steps={target: 0 for target in self.targets},
+                         target_halted_steps={target: 0 for target in self.targets},
                          blocked_flag=lane_blocked)
 
     def _is_counted_green_second(self, tau):
@@ -261,10 +270,16 @@ class LaneGreenTracker:
     def _evaluate_step(self, tau, signal, prev, curr, target_snapshots):
         exit_count = len(exited_ids(prev.ids, curr.ids))
         counted = self._is_counted_green_second(tau)
+        if counted and curr.halted_near_stop:
+            self.open_green.stop_halted_steps += 1
+        if counted and exit_count == 0:
+            self.open_green.no_exit_steps += 1
         targets = []
         for target in self.targets:
             near_entry = target_snapshots.get(target, EMPTY_SNAPSHOT).halted_near_entry
             blocked = is_spillback_blocked(curr.halted_near_stop, exit_count, near_entry)
+            if counted and near_entry:
+                self.open_green.target_halted_steps[target] += 1
             if counted and blocked:
                 self.open_green.blocked_steps[target] += 1
             targets.append(TargetInputs(target, near_entry, blocked if counted else None))
@@ -294,6 +309,9 @@ class LaneGreenTracker:
             blocked_steps=dict(green.blocked_steps),
             sosi={target: compute_sosi(steps, green_s)
                   for target, steps in green.blocked_steps.items()},
+            stop_halted_steps=green.stop_halted_steps,
+            no_exit_steps=green.no_exit_steps,
+            target_halted_steps=dict(green.target_halted_steps),
         )
 
 
