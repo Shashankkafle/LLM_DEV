@@ -1,4 +1,5 @@
-"""Tests for the regime state machine and Diagnoser (utils/regime.py).
+"""Tests for the regime state machines (utils/regime.py) and the Diagnoser
+that drives them (utils/diagnoser.py).
 
     python -m pytest tests/test_regime.py
     python tests/test_regime.py            # without pytest
@@ -15,13 +16,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from configurations import INTERSECTION_CONFIGS, REGIME_FILENAME  # noqa: E402
+from configurations import EXTENTS_FILENAME, REGIME_FILENAME  # noqa: E402
+from utils.diagnoser import EXTENT_COLUMNS, REGIME_COLUMNS, Diagnoser  # noqa: E402
 from utils.movement_flags import FlagConfig, MovementFlags  # noqa: E402
 from utils.oversaturation_indices import IntervalResult, LaneGreenTracker  # noqa: E402
-from utils.regime import (  # noqa: E402
-    REGIME_COLUMNS, CycleEvents, Diagnoser, next_extent_regime, next_regime,
-    nominal_cycle_s,
-)
+from utils.regime import CycleEvents, next_extent_regime, next_regime  # noqa: E402
 
 LANE = "in_1"
 TARGET = "out_1"
@@ -109,10 +108,6 @@ def test_cycle_events_split_tosi_entries_from_sosi_entries_and_record_exit_lanes
     assert events.exit_lanes == {"a"}
 
 
-def test_nominal_cycle_from_config():
-    assert nominal_cycle_s(INTERSECTION_CONFIGS["three_lane"]) == 140
-
-
 # --- Diagnoser over the real MovementFlags ---------------------------------------
 
 def tracker():
@@ -136,7 +131,7 @@ def green(allred, oversaturated):
 def run_diagnoser(greens_by_time, last_t):
     """Step the clock 1..last_t, closing each green at its allred second the
     way OversaturationIndices.update does before Diagnoser.update. Returns the
-    regime.csv rows and the regime seen at each step."""
+    regime.csv rows, the regime seen at each step and the extents.csv rows."""
     with tempfile.TemporaryDirectory() as tmp:
         flags = MovementFlags(FlagConfig(), Path(tmp))
         diagnoser = Diagnoser(flags, CYCLE_S, Path(tmp))
@@ -151,7 +146,9 @@ def run_diagnoser(greens_by_time, last_t):
         flags.close()
         with open(Path(tmp) / REGIME_FILENAME, newline="") as f:
             rows = list(csv.DictReader(f))
-    return rows, seen
+        with open(Path(tmp) / EXTENTS_FILENAME, newline="") as f:
+            extent_rows = list(csv.DictReader(f))
+    return rows, seen, extent_rows
 
 
 def test_diagnoser_reads_flag_transitions_and_logs_one_row_per_cycle():
@@ -164,7 +161,7 @@ def test_diagnoser_reads_flag_transitions_and_logs_one_row_per_cycle():
         500: green(500, oversaturated=False),
         600: green(600, oversaturated=False),
     }
-    rows, seen = run_diagnoser(greens, last_t=750)
+    rows, seen, _ = run_diagnoser(greens, last_t=750)
     assert list(rows[0]) == REGIME_COLUMNS
     assert [r["cycle_start"] for r in rows] == ["0", "140", "280", "420", "560", "700"]
     assert [(r["entries"], r["exits"], r["n_active"]) for r in rows] == [
@@ -174,12 +171,33 @@ def test_diagnoser_reads_flag_transitions_and_logs_one_row_per_cycle():
 
 
 def test_diagnoser_green_at_cycle_boundary_belongs_to_next_cycle():
-    rows, _ = run_diagnoser({140: green(140, oversaturated=True)}, last_t=279)
+    rows, _, _ = run_diagnoser({140: green(140, oversaturated=True)}, last_t=279)
     assert [(r["cycle_start"], r["entries"]) for r in rows] == [("0", "0"), ("140", "1")]
 
 
+def test_diagnoser_logs_extents_from_carried_forward_flags():
+    # The lane has no green closing in cycles 280-699; its flag still counts.
+    greens = {
+        170: green(170, oversaturated=True),
+        710: green(710, oversaturated=False),
+        760: green(760, oversaturated=False),
+        810: green(810, oversaturated=False),
+    }
+    _, _, extent_rows = run_diagnoser(greens, last_t=900)
+    assert list(extent_rows[0]) == EXTENT_COLUMNS
+    assert [(r["cycle_start"], r["extent_id"], r["members"], r["n_lanes"], r["n_conns"],
+             r["E"], r["X"], r["regime"], r["newborn"], r["vanished"])
+            for r in extent_rows] == [
+        ("140", "1", LANE, "1", "1", "1", "0", "L", "1", "0"),
+        ("280", "1", LANE, "1", "1", "0", "0", "P", "0", "0"),
+        ("420", "1", LANE, "1", "1", "0", "0", "P", "0", "0"),
+        ("560", "1", LANE, "1", "1", "0", "0", "P", "0", "0"),
+        ("700", "1", "", "0", "0", "0", "1", "N", "0", "1"),
+    ]
+
+
 def test_decisions_see_regime_of_last_closed_cycle():
-    _, seen = run_diagnoser({170: green(170, oversaturated=True)}, last_t=300)
+    _, seen, _ = run_diagnoser({170: green(170, oversaturated=True)}, last_t=300)
     assert seen[278] == "N"   # cycle 140-279 not yet closed
     assert seen[279] == "L"   # closed on its last second
     assert seen[300] == "L"

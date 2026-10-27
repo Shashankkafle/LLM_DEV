@@ -293,9 +293,11 @@ OVERSATURATION_SHADOW_FILENAME = "oversaturation_shadow.csv"
 # Per-movement overflow flags with hysteresis, one row per movement per closed
 # green (utils/movement_flags.py, opt-in via --movement_flags).
 MOVEMENT_FLAGS_FILENAME = "movement_flags.csv"
-# Network regime (N/L/P/R) per cycle from movement-flag events
-# (utils/regime.py, written whenever movement flags are on).
+# Network regime (N/L/P/R) per cycle from movement-flag events, and the
+# extents with their own regimes (utils/diagnoser.py, written whenever
+# movement flags are on).
 REGIME_FILENAME = "regime.csv"
+EXTENTS_FILENAME = "extents.csv"
 DECISIONS_FILENAME = "decisions.jsonl"
 PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.jsonl"
 

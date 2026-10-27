@@ -20,7 +20,7 @@ import traci
 
 from runner_common import (
     setup_run, run_control_loop, build_blockage_manager,
-    add_movement_flag_args, movement_flag_config_from_args,
+    add_movement_flag_args, movement_flag_config_from_args, regime_cycle_s_from_args,
 )
 from utils.run_manifest import build_manifest
 from configurations import (
@@ -167,7 +167,8 @@ def main(args):
                     blockage_manager=blockage_manager, manifest=manifest,
                     run_group=args.run_group, logs_dir=args.logs_dir,
                     oversat_shadow=getattr(args, "oversat_shadow", False),
-                    movement_flag_config=movement_flag_config_from_args(args))
+                    movement_flag_config=movement_flag_config_from_args(args),
+                    regime_cycle_s=regime_cycle_s_from_args(args))
     controller = build_controller(args.controller, conf, list(ctx.handlers))
 
     print(f"Controller    : {args.controller}")

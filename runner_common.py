@@ -19,7 +19,7 @@ from utils.metrics_recorder import MetricsRecorder
 from utils.replay_recorder import ReplayRecorder
 from utils.oversaturation_indices import OversaturationIndices
 from utils.movement_flags import FLAG_COLUMNS, FlagConfig, MovementFlags
-from utils.regime import Diagnoser, nominal_cycle_s
+from utils.diagnoser import DEFAULT_CYCLE_S, Diagnoser
 from utils.blockage_manager import BlockageManager, load_scenario
 from utils import llm_activity
 from utils.run_manifest import add_sumo_runtime, save_manifest, finalize_manifest
@@ -65,6 +65,14 @@ def add_movement_flag_args(parser):
     parser.add_argument("--sosi_loss_s", type=float, default=FlagConfig.sosi_loss_s,
                         help="L: seconds of green lost to downstream blockage "
                              "(SOSI x green_s) that raise a SOSI-branch flag.")
+    parser.add_argument("--cycle_s", type=int, default=DEFAULT_CYCLE_S,
+                        help="Cycle on which the regimes and extents are "
+                             "evaluated (regime.csv, extents.csv).")
+
+
+def regime_cycle_s_from_args(args):
+    """getattr because tests build the args Namespace by hand."""
+    return getattr(args, "cycle_s", DEFAULT_CYCLE_S)
 
 
 def movement_flag_config_from_args(args):
@@ -139,7 +147,7 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
               seed=None, verbose_metrics=False, blockage_manager=None,
               manifest=None, run_group=None, logs_dir=None,
               oversat_shadow=False, oversat_listener=None, extra_sumo_args=(),
-              movement_flag_config=None):
+              movement_flag_config=None, regime_cycle_s=DEFAULT_CYCLE_S):
     """Build the run stack every controller shares.
 
     run_meta is written to replay_meta.json (and the manifest, when given, to
@@ -148,7 +156,7 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
 
     movement_flag_config (a FlagConfig) turns on MovementFlags and the regime
     Diagnoser in front of it, which takes the single oversaturation listener
-    slot.
+    slot and evaluates once every regime_cycle_s seconds.
     """
     if movement_flag_config is not None and oversat_listener is not None:
         raise ValueError("movement flags and oversat_listener both need the "
@@ -183,7 +191,7 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
     diagnoser = None
     if movement_flag_config is not None:
         movement_flags = MovementFlags(movement_flag_config, records_dir)
-        diagnoser = Diagnoser(movement_flags, nominal_cycle_s(conf), records_dir)
+        diagnoser = Diagnoser(movement_flags, regime_cycle_s, records_dir)
         recorder.diagnoser = diagnoser
         oversat_listener = diagnoser
     oversaturation = OversaturationIndices(records_dir, blockage_manager,
