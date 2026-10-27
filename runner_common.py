@@ -47,20 +47,24 @@ def build_blockage_manager(scenario_path):
 
 def add_movement_flag_args(parser):
     """The --movement_flags CLI, shared by every runner that uses setup_run.
-    Threshold defaults are None so FlagConfig stays the one place they live."""
+    Defaults are read from FlagConfig so they live in one place, and are real
+    values (not None) so the manifest's args record what the run used."""
     parser.add_argument("--movement_flags", action="store_true",
                         help="Also write movement_flags.csv: per-movement "
                              "oversaturation flags with hysteresis, built on "
                              "TOSI/SOSI. Observer only; control is unchanged.")
-    parser.add_argument("--theta_in", type=float, default=None,
-                        help="Queue/storage ratio a flag needs to raise.")
-    parser.add_argument("--theta_out", type=float, default=None,
-                        help="Ratio a green must fall below to count as clean "
-                             "(<= theta_in - 0.10).")
-    parser.add_argument("--n_in", type=int, default=None,
+    parser.add_argument("--theta_in", type=float, default=FlagConfig.theta_in,
+                        help="ratio_start a TOSI-branch entry needs.")
+    parser.add_argument("--theta_out", type=float, default=FlagConfig.theta_out,
+                        help="ratio_start a green must fall below to count as "
+                             "clean (<= theta_in - 0.10).")
+    parser.add_argument("--n_in", type=int, default=FlagConfig.n_in,
                         help="Consecutive entry greens needed to raise a flag.")
-    parser.add_argument("--k_flag", type=int, default=None,
+    parser.add_argument("--k_flag", type=int, default=FlagConfig.k_flag,
                         help="Consecutive clean greens needed to clear a flag.")
+    parser.add_argument("--sosi_loss_s", type=float, default=FlagConfig.sosi_loss_s,
+                        help="L: seconds of green lost to downstream blockage "
+                             "(SOSI x green_s) that raise a SOSI-branch flag.")
 
 
 def movement_flag_config_from_args(args):
@@ -69,7 +73,7 @@ def movement_flag_config_from_args(args):
     if not getattr(args, "movement_flags", False):
         return None
     overrides = {name: getattr(args, name, None)
-                 for name in ("theta_in", "theta_out", "n_in", "k_flag")}
+                 for name in ("theta_in", "theta_out", "n_in", "k_flag", "sosi_loss_s")}
     return FlagConfig(**{name: value for name, value in overrides.items()
                          if value is not None})
 

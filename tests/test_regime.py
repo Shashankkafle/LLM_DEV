@@ -89,8 +89,8 @@ def green(allred, oversaturated):
         tls="tls", lane=LANE, green_start=allred - 33, green_end=allred - 3,
         allred=allred, halted_at_start=frozenset(), on_lane_at_allred=frozenset(),
         tosi=tosi, discharged=0, blocked_flag=False, capacity=CAPACITY,
-        halted_count_start=0, halted_count_end=round(ratio * CAPACITY),
-        ratio_start=0.0, ratio_end=ratio, blocked_steps={TARGET: 0},
+        halted_count_start=round(ratio * CAPACITY), halted_count_end=0,
+        ratio_start=ratio, ratio_end=0.0, blocked_steps={TARGET: 0},
         sosi={TARGET: 0.0}, stop_halted_steps=0, no_exit_steps=0,
         target_halted_steps={TARGET: 0},
     )

@@ -1,15 +1,23 @@
 """Per-movement oversaturation flags with hysteresis, on top of TOSI/SOSI.
 
 A movement is one (lane, target_lane) connection. Each closed green of a lane
-updates the flag of every movement leaving it:
-    entry = (TOSI > 0 or SOSI > 0) and ratio >= theta_in, for n_in greens in a row
-    exit  = TOSI == 0 and SOSI == 0 and ratio < theta_out, for k_flag greens in a row
-TOSI and the queue/storage ratio are lane-level, so movements of one lane
-share them; SOSI is per movement. Clause form per NCHRP pp. 112-114.
+updates the flag of every movement leaving it (decisions.md 2026/10/26):
+    u     = SOSI * green_s, the seconds of green lost to downstream blockage
+    entry = (TOSI > 0 and ratio_start >= theta_in)       TOSI branch
+            or u >= sosi_loss_s                           SOSI branch
+            for n_in greens in a row
+    clean = TOSI == 0 and u < sosi_loss_s and ratio_start < theta_out
+    exit  = k_flag clean greens in a row; any other green resets the count
+TOSI and ratio_start are lane-level, so movements of one lane share them; SOSI
+is per movement.
 
-A blocked lane (an active blockage on it during the green) forces its flags
-off and resets their counters. A green with TOSI, SOSI or the ratio missing is
-skipped: no counter or state changes.
+branch is T when the flag entered on the TOSI branch, or met the TOSI-branch
+condition on any later green while active; otherwise S. Only T flags feed
+the extent builder.
+
+A missing input (None; TOSI is None on a blocked lane) fails every clause, so
+such a green neither enters nor counts as clean. The skipped column marks
+those greens.
 
 Plugged in as the OversaturationIndices listener; only on_interval_closed does
 work. Later layers read active_flags() and severity() and nothing else.
@@ -25,20 +33,26 @@ MIN_HYSTERESIS_GAP = 0.10
 # Absorbs float error so e.g. theta_in=0.3, theta_out=0.2 is accepted.
 GAP_TOLERANCE = 1e-9
 
+TOSI_BRANCH = "T"
+SOSI_BRANCH = "S"
+
 FLAG_COLUMNS = [
     "t_close", "tls", "lane", "target_lane", "link_indices", "tosi", "sosi",
     "ratio_end", "halted_count_end", "discharged", "blocked", "skipped",
     "entry_count", "clean_count", "active", "raised_at",
     "held_over", "ratio_start", "sosi_c1", "sosi_c2", "sosi_c3",
+    "branch",
 ]
 
 
 @dataclass
 class FlagConfig:
-    theta_in: float = 0.5
-    theta_out: float = 0.35
+    theta_in: float = 0.30
+    theta_out: float = 0.20
     n_in: int = 1
     k_flag: int = 3
+    # L: yellow + all-red, the green a movement can lose without being blocked.
+    sosi_loss_s: float = 5.0
 
     def __post_init__(self):
         if self.theta_out > self.theta_in - MIN_HYSTERESIS_GAP + GAP_TOLERANCE:
@@ -52,17 +66,42 @@ class FlagState:
     raised_at: int | None = None      # t_close of the green that raised it
     entry_count: int = 0              # consecutive greens meeting entry condition
     clean_count: int = 0              # consecutive clean greens while active
-    last_ratio: float | None = None   # ratio_end of last evaluated green
+    branch: str = ""                  # TOSI_BRANCH or SOSI_BRANCH while active
+    last_ratio: float | None = None   # ratio_start of last green
 
 
 # --- pure update rule (no I/O) ----------------------------------------------------
 
-def meets_entry(tosi, sosi, ratio, config):
-    return (tosi > 0 or sosi > 0) and ratio >= config.theta_in
+def sosi_loss_s(sosi, green_s):
+    return None if sosi is None else sosi * green_s
 
 
-def is_clean(tosi, sosi, ratio, config):
-    return tosi == 0 and sosi == 0 and ratio < config.theta_out
+def has_missing_input(tosi, sosi, ratio_start):
+    return tosi is None or sosi is None or ratio_start is None
+
+
+def meets_tosi_entry(tosi, ratio_start, config):
+    return (tosi is not None and ratio_start is not None
+            and tosi > 0 and ratio_start >= config.theta_in)
+
+
+def meets_sosi_entry(loss_s, config):
+    return loss_s is not None and loss_s >= config.sosi_loss_s
+
+
+def is_clean(tosi, loss_s, ratio_start, config):
+    return (tosi is not None and loss_s is not None and ratio_start is not None
+            and tosi == 0 and loss_s < config.sosi_loss_s
+            and ratio_start < config.theta_out)
+
+
+def entry_branch(tosi_entry, sosi_entry):
+    """The branch a green would raise a flag on, or None if it meets neither."""
+    if tosi_entry:
+        return TOSI_BRANCH
+    if sosi_entry:
+        return SOSI_BRANCH
+    return None
 
 
 def clear_flag(state):
@@ -70,36 +109,40 @@ def clear_flag(state):
     state.raised_at = None
     state.entry_count = 0
     state.clean_count = 0
+    state.branch = ""
 
 
-def update_inactive(state, entering, t_close, config):
-    state.entry_count = state.entry_count + 1 if entering else 0
+def update_inactive(state, branch, t_close, config):
+    state.entry_count = state.entry_count + 1 if branch else 0
     if state.entry_count >= config.n_in:
         state.active = True
         state.raised_at = t_close
         state.clean_count = 0
+        state.branch = branch
 
 
-def update_active(state, clean, config):
+def update_active(state, clean, tosi_entry, config):
     state.clean_count = state.clean_count + 1 if clean else 0
     if state.clean_count >= config.k_flag:
         clear_flag(state)
+    elif tosi_entry:
+        state.branch = TOSI_BRANCH
 
 
-def update_flag(state, tosi, sosi, ratio, blocked, t_close, config):
-    """Apply one closed green to one movement's flag. Returns True when the
-    green was skipped for a missing input."""
-    if blocked:
-        clear_flag(state)
-        return False
-    if tosi is None or sosi is None or ratio is None:
-        return True
+def update_flag(state, tosi, sosi, green_s, ratio_start, t_close, config):
+    """Apply one closed green to one movement's flag."""
+    # OPEN: frozen flag on blocked lane (decisions.md)
+    # A blocked lane has TOSI None, which fails every clause: an active flag
+    # can never exit while its lane stays blocked.
+    loss_s = sosi_loss_s(sosi, green_s)
+    tosi_entry = meets_tosi_entry(tosi, ratio_start, config)
     if state.active:
-        update_active(state, is_clean(tosi, sosi, ratio, config), config)
+        update_active(state, is_clean(tosi, loss_s, ratio_start, config),
+                      tosi_entry, config)
     else:
-        update_inactive(state, meets_entry(tosi, sosi, ratio, config), t_close, config)
-    state.last_ratio = ratio
-    return False
+        branch = entry_branch(tosi_entry, meets_sosi_entry(loss_s, config))
+        update_inactive(state, branch, t_close, config)
+    state.last_ratio = ratio_start
 
 
 # --- listener ---------------------------------------------------------------------
@@ -114,7 +157,8 @@ def flag_row(result, target, link_indices, skipped, state):
             format_value(state.raised_at),
             result.held_over, format_value(result.ratio_start),
             result.stop_halted_steps, result.no_exit_steps,
-            result.target_halted_steps[target]]
+            result.target_halted_steps[target],
+            state.branch]
 
 
 class MovementFlags:
@@ -139,8 +183,9 @@ class MovementFlags:
     def on_interval_closed(self, tracker, result):
         for target, sosi in result.sosi.items():
             state = self.flags.setdefault((result.lane, target), FlagState())
-            skipped = update_flag(state, result.tosi, sosi, result.ratio_end,
-                                  result.blocked_flag, result.allred, self.config)
+            update_flag(state, result.tosi, sosi, result.green_s,
+                        result.ratio_start, result.allred, self.config)
+            skipped = has_missing_input(result.tosi, sosi, result.ratio_start)
             link_indices = tracker.target_link_indices.get(target, [])
             self._writer.writerow(flag_row(result, target, link_indices, skipped, state))
 

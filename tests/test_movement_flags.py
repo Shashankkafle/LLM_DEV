@@ -7,6 +7,7 @@ All synthetic IntervalResult sequences, no SUMO. The SUMO smoke check that
 flags leave control untouched lives in test_oversaturation_indices.py
 (test_smoke_indices_do_not_change_control).
 """
+import argparse
 import csv
 import sys
 import tempfile
@@ -18,6 +19,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from configurations import MOVEMENT_FLAGS_FILENAME  # noqa: E402
+from runner_common import add_movement_flag_args, movement_flag_config_from_args  # noqa: E402
 from utils.movement_flags import FLAG_COLUMNS, FlagConfig, MovementFlags  # noqa: E402
 from utils.oversaturation_indices import IntervalResult, LaneGreenTracker  # noqa: E402
 
@@ -27,6 +29,8 @@ OTHER_TARGET = "out_2"
 GREEN_S = 30
 CYCLE_S = 60
 CAPACITY = 20
+# SOSI that loses exactly L = 5 s of a 30 s green.
+SOSI_AT_L = 5 / GREEN_S
 
 
 def new_tracker():
@@ -35,16 +39,16 @@ def new_tracker():
 
 
 def interval(index, tosi=0.0, sosi=0.0, ratio=0.0, blocked=False, other_sosi=0.0):
-    """The index-th closed green of LANE; ratio_end is set directly."""
+    """The index-th closed green of LANE; ratio_start is set directly."""
     green_start = index * CYCLE_S
     return IntervalResult(
         tls="tls", lane=LANE, green_start=green_start,
         green_end=green_start + GREEN_S, allred=green_start + GREEN_S + 3,
         halted_at_start=frozenset(), on_lane_at_allred=frozenset(),
         tosi=tosi, discharged=0, blocked_flag=blocked, capacity=CAPACITY,
-        halted_count_start=0,
-        halted_count_end=None if ratio is None else round(ratio * CAPACITY),
-        ratio_start=0.0, ratio_end=ratio,
+        halted_count_start=None if ratio is None else round(ratio * CAPACITY),
+        halted_count_end=0,
+        ratio_start=ratio, ratio_end=0.0,
         blocked_steps={TARGET: 0, OTHER_TARGET: 0},
         sosi={TARGET: sosi, OTHER_TARGET: other_sosi},
         stop_halted_steps=0, no_exit_steps=0,
@@ -82,27 +86,57 @@ def clean(index):
 
 # --- entry ----------------------------------------------------------------------
 
-def test_enters_after_one_green_with_tosi_and_high_ratio():
+def test_tosi_branch_enters_at_theta_in():
     with open_flags() as flags:
-        feed(flags, [oversaturated(0)])
+        feed(flags, [interval(0, tosi=0.1, ratio=0.30)])
         assert state(flags).active
+        assert state(flags).branch == "T"
         assert state(flags).raised_at == interval(0).allred
         assert state(flags).entry_count == 1
         assert (LANE, TARGET) in flags.active_flags()
 
 
-def test_tosi_without_high_ratio_does_not_enter():
+def test_tosi_below_theta_in_does_not_enter():
     with open_flags() as flags:
-        feed(flags, [interval(0, tosi=0.5, ratio=0.49)])
+        feed(flags, [interval(0, tosi=0.5, ratio=0.29)])
         assert not state(flags).active
         assert state(flags).entry_count == 0
         assert flags.active_flags() == set()
 
 
-def test_sosi_alone_enters():
+def test_high_ratio_without_tosi_does_not_enter():
     with open_flags() as flags:
-        feed(flags, [interval(0, tosi=0.0, sosi=0.3, ratio=0.5)])
+        feed(flags, [interval(0, tosi=0.0, ratio=0.9)])
+        assert not state(flags).active
+
+
+def test_sosi_branch_enters_at_l_seconds_ungated_by_ratio():
+    with open_flags() as flags:
+        feed(flags, [interval(0, tosi=0.0, sosi=SOSI_AT_L, ratio=0.0)])
         assert state(flags).active
+        assert state(flags).branch == "S"
+
+
+def test_sosi_below_l_seconds_does_not_enter():
+    with open_flags() as flags:
+        feed(flags, [interval(0, tosi=0.0, sosi=4.9 / GREEN_S, ratio=0.9)])
+        assert not state(flags).active
+
+
+def test_both_branches_in_one_green_enter_as_tosi():
+    with open_flags() as flags:
+        feed(flags, [interval(0, tosi=0.2, sosi=0.5, ratio=0.6)])
+        assert state(flags).branch == "T"
+
+
+def test_sosi_flag_becomes_tosi_on_a_later_tosi_green():
+    with open_flags() as flags:
+        feed(flags, [interval(0, sosi=0.5), interval(1, sosi=0.5)])
+        assert state(flags).branch == "S"
+        feed(flags, [oversaturated(2)])
+        assert state(flags).branch == "T"
+        feed(flags, [interval(3, sosi=0.5)])
+        assert state(flags).branch == "T"
 
 
 def test_n_in_needs_consecutive_entry_greens():
@@ -115,51 +149,62 @@ def test_n_in_needs_consecutive_entry_greens():
 
 # --- exit -------------------------------------------------------------------------
 
-def test_dirty_green_resets_clean_count_and_clears_after_k_flag():
+def test_exits_after_exactly_three_clean_greens_with_a_reset_between():
     with open_flags() as flags:
         feed(flags, [oversaturated(0), clean(1), clean(2)])
         assert state(flags).active and state(flags).clean_count == 2
         feed(flags, [interval(3, tosi=0.1, ratio=0.1)])
         assert state(flags).active and state(flags).clean_count == 0
         feed(flags, [clean(4), clean(5)])
-        assert state(flags).active
+        assert state(flags).active and state(flags).clean_count == 2
         feed(flags, [clean(6)])
         cleared = state(flags)
         assert not cleared.active
-        assert (cleared.raised_at, cleared.entry_count, cleared.clean_count) == (None, 0, 0)
+        assert (cleared.raised_at, cleared.entry_count, cleared.clean_count,
+                cleared.branch) == (None, 0, 0, "")
 
 
 def test_ratio_in_hysteresis_band_is_not_clean():
     with open_flags() as flags:
-        feed(flags, [oversaturated(0)] + [interval(i, ratio=0.4) for i in range(1, 6)])
+        feed(flags, [oversaturated(0)] + [interval(i, ratio=0.2) for i in range(1, 6)])
         assert state(flags).active
         assert state(flags).clean_count == 0
 
 
-# --- blocked and missing inputs ------------------------------------------------------
-
-def test_blocked_green_forces_inactive_and_resets():
-    with open_flags(FlagConfig(n_in=2)) as flags:
-        feed(flags, [oversaturated(0), oversaturated(1)])
+def test_sosi_loss_of_l_seconds_is_not_clean():
+    with open_flags() as flags:
+        feed(flags, [oversaturated(0)]
+             + [interval(i, sosi=SOSI_AT_L, ratio=0.0) for i in range(1, 6)])
         assert state(flags).active
-        feed(flags, [interval(2, tosi=None, sosi=0.5, ratio=0.9, blocked=True)])
-        blocked = state(flags)
-        assert not blocked.active
-        assert (blocked.raised_at, blocked.entry_count, blocked.clean_count) == (None, 0, 0)
-        feed(flags, [oversaturated(3)])
-        assert not state(flags).active and state(flags).entry_count == 1
+        assert state(flags).clean_count == 0
 
 
-def test_missing_input_skips_without_changing_state():
+# --- missing inputs ----------------------------------------------------------------
+
+def test_nan_tosi_neither_enters_nor_cleans():
+    with open_flags() as flags:
+        feed(flags, [interval(0, tosi=None, ratio=0.9, blocked=True)])
+        assert not state(flags).active
+        feed(flags, [oversaturated(1), clean(2), clean(3)])
+        assert state(flags).clean_count == 2
+        feed(flags, [interval(4, tosi=None, ratio=0.0, blocked=True)])
+        assert state(flags).active
+        assert state(flags).clean_count == 0
+
+
+def test_missing_sosi_still_allows_a_tosi_entry():
+    with open_flags() as flags:
+        feed(flags, [interval(0, tosi=0.2, sosi=None, ratio=0.6)])
+        assert state(flags).active and state(flags).branch == "T"
+
+
+def test_missing_input_is_never_clean():
     for missing in ({"tosi": None}, {"sosi": None}, {"ratio": None}):
         with open_flags() as flags:
             feed(flags, [oversaturated(0), clean(1)])
-            before = (state(flags).active, state(flags).raised_at, state(flags).entry_count,
-                      state(flags).clean_count, state(flags).last_ratio)
             feed(flags, [interval(2, **{"tosi": 0.0, "sosi": 0.0, "ratio": 0.1, **missing})])
-            after = (state(flags).active, state(flags).raised_at, state(flags).entry_count,
-                     state(flags).clean_count, state(flags).last_ratio)
-            assert after == before, missing
+            assert state(flags).active, missing
+            assert state(flags).clean_count == 0, missing
 
 
 # --- movements of one lane -------------------------------------------------------------
@@ -193,6 +238,15 @@ def test_config_rejects_too_narrow_hysteresis_gap():
     FlagConfig(theta_in=0.3, theta_out=0.2)
 
 
+def test_cli_defaults_are_the_spec_constants_and_not_none():
+    parser = argparse.ArgumentParser()
+    add_movement_flag_args(parser)
+    args = parser.parse_args(["--movement_flags"])
+    assert (args.theta_in, args.theta_out, args.k_flag, args.n_in, args.sosi_loss_s) == \
+        (0.30, 0.20, 3, 1, 5.0)
+    assert movement_flag_config_from_args(args) == FlagConfig()
+
+
 # --- CSV ---------------------------------------------------------------------------------
 
 def test_csv_rows_and_columns():
@@ -205,16 +259,17 @@ def test_csv_rows_and_columns():
             reader = csv.DictReader(f)
             rows = list(reader)
         assert reader.fieldnames == FLAG_COLUMNS
+    assert FLAG_COLUMNS[-1] == "branch"
     assert len(rows) == 3 * 2
     first = rows[0]
     assert first["target_lane"] == TARGET and first["link_indices"] == "0;1"
     assert rows[1]["target_lane"] == OTHER_TARGET and rows[1]["link_indices"] == "2"
-    assert (first["tosi"], first["ratio_end"], first["active"], first["raised_at"]) == \
-        ("0.2000", "0.6000", "1", str(interval(0).allred))
+    assert (first["tosi"], first["ratio_start"], first["active"], first["raised_at"],
+            first["branch"]) == ("0.2000", "0.6000", "1", str(interval(0).allred), "T")
     skipped, blocked = rows[2], rows[4]
     assert (skipped["skipped"], skipped["tosi"], skipped["active"]) == ("1", "", "1")
-    assert (blocked["blocked"], blocked["skipped"], blocked["active"], blocked["raised_at"]) == \
-        ("1", "0", "0", "")
+    assert (blocked["blocked"], blocked["skipped"], blocked["active"], blocked["branch"]) == \
+        ("1", "1", "1", "T")
 
 
 if __name__ == "__main__":
