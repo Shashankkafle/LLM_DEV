@@ -116,6 +116,81 @@ def test_extent_with_no_component_vanishes():
         (1, frozenset(), 1, True)
 
 
+# --- regime per extent -------------------------------------------------------------
+
+MIDDLE_ONLY = {(NS_MIDDLE, NS_DOWNSTREAM)}
+MIDDLE_AND_DOWNSTREAM = {(NS_MIDDLE, NS_DOWNSTREAM), (NS_DOWNSTREAM, EXIT_LANE)}
+FULL_CHAIN = MIDDLE_AND_DOWNSTREAM | {(NS_UPSTREAM, NS_MIDDLE)}
+
+
+def regimes(rows_per_cycle, extent_id=1):
+    return "".join(row.regime for rows in rows_per_cycle for row in rows
+                   if row.extent_id == extent_id)
+
+
+def test_newborn_loads_for_one_cycle_then_processes():
+    rows = run_cycles(ExtentTracker(), [
+        (MIDDLE_ONLY, events(entries=[NS_MIDDLE])),
+        (MIDDLE_ONLY, events()),
+        (MIDDLE_ONLY, events()),
+    ])
+    assert regimes(rows) == "LPP"
+
+
+def test_chained_entry_in_processing_stays_processing():
+    rows = run_cycles(ExtentTracker(), [
+        (MIDDLE_ONLY, events(entries=[NS_MIDDLE])),
+        (MIDDLE_ONLY, events()),
+        (MIDDLE_AND_DOWNSTREAM, events(entries=[NS_DOWNSTREAM])),
+    ])
+    assert regimes(rows) == "LPP"
+    assert rows[2][0].entries == 1
+
+
+def test_chained_entry_in_recovery_returns_to_processing():
+    rows = run_cycles(ExtentTracker(), [
+        (FULL_CHAIN, events(entries=[NS_UPSTREAM, NS_MIDDLE, NS_DOWNSTREAM])),
+        (FULL_CHAIN, events()),
+        (MIDDLE_AND_DOWNSTREAM, events(exits=[NS_UPSTREAM])),
+        (FULL_CHAIN, events(entries=[NS_UPSTREAM])),
+    ])
+    assert regimes(rows) == "LPRP"
+
+
+def test_exit_with_entry_in_same_cycle_is_not_recovery():
+    rows = run_cycles(ExtentTracker(), [
+        (FULL_CHAIN, events(entries=[NS_UPSTREAM, NS_MIDDLE, NS_DOWNSTREAM])),
+        (FULL_CHAIN, events()),
+        (FULL_CHAIN, events(entries=[NS_UPSTREAM], exits=[NS_UPSTREAM])),
+    ])
+    assert regimes(rows) == "LPP"
+
+
+def test_split_keeps_regime_on_oldest_member_piece():
+    rows = run_cycles(ExtentTracker(), [
+        ({(NS_DOWNSTREAM, EXIT_LANE)}, events(entries=[NS_DOWNSTREAM])),
+        (FULL_CHAIN, events(entries=[NS_UPSTREAM, NS_MIDDLE])),
+        (FULL_CHAIN, events()),
+        (FULL_CHAIN - {(NS_MIDDLE, NS_DOWNSTREAM)}, events(exits=[NS_MIDDLE])),
+    ])
+    old_piece, new_piece = rows[3]
+    assert (old_piece.extent_id, old_piece.regime) == (1, "R")
+    assert (new_piece.extent_id, new_piece.regime, new_piece.newborn) == (2, "L", True)
+    assert regimes(rows) == "LPPR"
+
+
+def test_last_exit_goes_to_normal_in_that_cycle_and_extent_is_dropped():
+    tracker = ExtentTracker()
+    rows = run_cycles(tracker, [
+        (MIDDLE_ONLY, events(entries=[NS_MIDDLE])),
+        (MIDDLE_ONLY, events()),
+        (set(), events(exits=[NS_MIDDLE])),
+        (set(), events()),
+    ])
+    assert regimes(rows) == "LPN"
+    assert rows[3] == [] and tracker.extents == {}
+
+
 if __name__ == "__main__":
     failures = 0
     for name, test in sorted(globals().items()):

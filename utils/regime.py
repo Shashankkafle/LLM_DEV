@@ -42,6 +42,25 @@ def next_regime(state, entries, exits, n_active):
     return state
 
 
+def next_extent_regime(state, entries, exits, n_conns, newborn):
+    """One cycle of one extent's machine (decisions.md 2026/10/26 + 10/27).
+    A newborn extent is a new root, so it loads. Every entry into an existing
+    extent is chained: it widens the extent and never returns it to L, but in
+    R it means queues are held again (-> P). A vanished extent is stepped with
+    entries = n_conns = 0."""
+    if newborn:
+        return LOADING
+    if state == LOADING:
+        state = PROCESSING
+    if entries > 0 and state == RECOVERY:
+        state = PROCESSING
+    if exits > 0 and entries == 0:
+        state = RECOVERY
+    if state == RECOVERY and n_conns == 0:
+        state = NORMAL
+    return state
+
+
 @dataclass
 class CycleEvents:
     """Flag on/off events of one cycle. entries/exits count movements; the lane

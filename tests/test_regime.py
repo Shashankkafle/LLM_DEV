@@ -19,7 +19,8 @@ from configurations import INTERSECTION_CONFIGS, REGIME_FILENAME  # noqa: E402
 from utils.movement_flags import FlagConfig, MovementFlags  # noqa: E402
 from utils.oversaturation_indices import IntervalResult, LaneGreenTracker  # noqa: E402
 from utils.regime import (  # noqa: E402
-    REGIME_COLUMNS, CycleEvents, Diagnoser, next_regime, nominal_cycle_s,
+    REGIME_COLUMNS, CycleEvents, Diagnoser, next_extent_regime, next_regime,
+    nominal_cycle_s,
 )
 
 LANE = "in_1"
@@ -72,6 +73,32 @@ def test_last_exit_empties_set_gives_normal_in_that_cycle():
 def test_loading_moves_to_processing_even_with_set_empty():
     # No exit happened, so there is no recovery to declare; P waits for one.
     assert run_machine([(0, 0, 0)], state="L") == ["P"]
+
+
+def run_extent_machine(cycles, state="N"):
+    """Regime after each cycle of an (entries, exits, n_conns) sequence of an
+    extent that already exists."""
+    states = []
+    for entries, exits, n_conns in cycles:
+        state = next_extent_regime(state, entries, exits, n_conns, newborn=False)
+        states.append(state)
+    return states
+
+
+def test_extent_newborn_is_loading_whatever_its_counts():
+    assert next_extent_regime("N", 0, 0, 1, newborn=True) == "L"
+    assert next_extent_regime("P", 2, 1, 3, newborn=True) == "L"
+
+
+def test_extent_chained_entry_never_returns_to_loading():
+    assert run_extent_machine([(1, 0, 2)], state="P") == ["P"]
+    assert run_extent_machine([(1, 0, 2)], state="R") == ["P"]
+    assert run_extent_machine([(1, 0, 2)], state="L") == ["P"]
+
+
+def test_extent_exit_without_entry_recovers_and_empty_goes_to_normal():
+    assert run_extent_machine([(0, 1, 2), (0, 0, 2), (0, 1, 0)], state="P") == list("RRN")
+    assert run_extent_machine([(1, 1, 2)], state="P") == ["P"]
 
 
 def test_cycle_events_split_tosi_entries_from_sosi_entries_and_record_exit_lanes():
