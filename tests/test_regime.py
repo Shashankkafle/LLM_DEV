@@ -18,7 +18,9 @@ sys.path.insert(0, str(REPO))
 from configurations import INTERSECTION_CONFIGS, REGIME_FILENAME  # noqa: E402
 from utils.movement_flags import FlagConfig, MovementFlags  # noqa: E402
 from utils.oversaturation_indices import IntervalResult, LaneGreenTracker  # noqa: E402
-from utils.regime import REGIME_COLUMNS, Diagnoser, next_regime, nominal_cycle_s  # noqa: E402
+from utils.regime import (  # noqa: E402
+    REGIME_COLUMNS, CycleEvents, Diagnoser, next_regime, nominal_cycle_s,
+)
 
 LANE = "in_1"
 TARGET = "out_1"
@@ -70,6 +72,14 @@ def test_last_exit_empties_set_gives_normal_in_that_cycle():
 def test_loading_moves_to_processing_even_with_set_empty():
     # No exit happened, so there is no recovery to declare; P waits for one.
     assert run_machine([(0, 0, 0)], state="L") == ["P"]
+
+
+def test_cycle_events_split_tosi_entries_from_sosi_entries_and_record_exit_lanes():
+    events = CycleEvents()
+    events.add(before={("a", "x"): "T"}, after={("b", "y"): "T", ("c", "z"): "S"})
+    assert (events.entries, events.exits) == (2, 1)
+    assert events.tosi_entry_lanes == {"b"}
+    assert events.exit_lanes == {"a"}
 
 
 def test_nominal_cycle_from_config():

@@ -220,6 +220,27 @@ def test_two_targets_keep_independent_sosi_state_but_share_lane_inputs():
         assert flags.active_flags() == {(LANE, TARGET), (LANE, OTHER_TARGET)}
 
 
+def test_flag_state_carries_forward_without_greens_of_its_lane():
+    other_lane = LaneGreenTracker("tls", "in_2", 150.0, [3], ["out_3"], {"out_3": [3]})
+    with open_flags() as flags:
+        feed(flags, [interval(0, tosi=0.2, sosi=0.5, other_sosi=0.5, ratio=0.6)])
+        for index in range(1, 5):
+            result = interval(index, ratio=0.0)
+            result.lane = "in_2"
+            result.sosi = {"out_3": 0.0}
+            result.target_halted_steps = {"out_3": 0}
+            flags.on_interval_closed(other_lane, result)
+        assert flags.tosi_flags() == {(LANE, TARGET), (LANE, OTHER_TARGET)}
+        assert flags.active_branches() == {(LANE, TARGET): "T", (LANE, OTHER_TARGET): "T"}
+
+
+def test_tosi_flags_excludes_sosi_branch():
+    with open_flags() as flags:
+        feed(flags, [interval(0, tosi=0.0, sosi=0.5, other_sosi=0.0, ratio=0.0)])
+        assert flags.active_branches() == {(LANE, TARGET): "S"}
+        assert flags.tosi_flags() == set()
+
+
 def test_severity_is_none_for_unseen_movement():
     with open_flags() as flags:
         assert flags.severity(LANE, TARGET) is None

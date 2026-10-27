@@ -20,7 +20,8 @@ such a green neither enters nor counts as clean. The skipped column marks
 those greens.
 
 Plugged in as the OversaturationIndices listener; only on_interval_closed does
-work. Later layers read active_flags() and severity() and nothing else.
+work. Later layers read active_flags(), active_branches(), tosi_flags() and
+severity() and nothing else.
 """
 
 import csv
@@ -191,6 +192,17 @@ class MovementFlags:
 
     def active_flags(self):
         return {movement for movement, state in self.flags.items() if state.active}
+
+    def active_branches(self):
+        """{movement: branch} for every active flag. A flag's state carries
+        forward between its greens, so a movement whose lane had no green
+        closing in the current cycle still reads as active here."""
+        return {movement: state.branch for movement, state in self.flags.items()
+                if state.active}
+
+    def tosi_flags(self):
+        return {movement for movement, branch in self.active_branches().items()
+                if branch == TOSI_BRANCH}
 
     def severity(self, lane, target):
         state = self.flags.get((lane, target))

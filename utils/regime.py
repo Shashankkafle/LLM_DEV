@@ -14,8 +14,10 @@ matching the offline reference regime_ref.py.
 """
 
 import csv
+from dataclasses import dataclass, field
 
 from configurations import REGIME_FILENAME
+from utils.movement_flags import TOSI_BRANCH
 
 NORMAL = "N"
 LOADING = "L"
@@ -40,6 +42,26 @@ def next_regime(state, entries, exits, n_active):
     return state
 
 
+@dataclass
+class CycleEvents:
+    """Flag on/off events of one cycle. entries/exits count movements; the lane
+    sets feed the extent builder, which works on lanes."""
+    entries: int = 0
+    exits: int = 0
+    tosi_entry_lanes: set = field(default_factory=set)
+    exit_lanes: set = field(default_factory=set)
+
+    def add(self, before, after):
+        """before/after: active_branches() around one closed green."""
+        entered = after.keys() - before.keys()
+        exited = before.keys() - after.keys()
+        self.entries += len(entered)
+        self.exits += len(exited)
+        self.tosi_entry_lanes |= {lane for lane, target in entered
+                                  if after[(lane, target)] == TOSI_BRANCH}
+        self.exit_lanes |= {lane for lane, _ in exited}
+
+
 def nominal_cycle_s(conf):
     """One full round of every phase at default timing (green + yellow + red)."""
     settings = conf["global_settings"]
@@ -57,8 +79,7 @@ class Diagnoser:
         self.regime = NORMAL
         self._cycle_index = 0
         self._last_t = None
-        self._entries = 0
-        self._exits = 0
+        self._events = CycleEvents()
         self._file = open(records_dir / REGIME_FILENAME, "w", newline="")
         self._writer = csv.writer(self._file)
         self._writer.writerow(REGIME_COLUMNS)
@@ -72,11 +93,9 @@ class Diagnoser:
         self.movement_flags.on_step(tracker, step)
 
     def on_interval_closed(self, tracker, result):
-        before = self.movement_flags.active_flags()
+        before = self.movement_flags.active_branches()
         self.movement_flags.on_interval_closed(tracker, result)
-        after = self.movement_flags.active_flags()
-        self._entries += len(after - before)
-        self._exits += len(before - after)
+        self._events.add(before, self.movement_flags.active_branches())
 
     # --- cycle clock ------------------------------------------------------------
 
@@ -96,10 +115,10 @@ class Diagnoser:
         self._file.close()
 
     def _close_cycle(self):
+        events = self._events
         n_active = len(self.movement_flags.active_flags())
-        self.regime = next_regime(self.regime, self._entries, self._exits, n_active)
+        self.regime = next_regime(self.regime, events.entries, events.exits, n_active)
         self._writer.writerow([self._cycle_index * self.cycle_s, n_active,
-                               self._entries, self._exits, self.regime])
+                               events.entries, events.exits, self.regime])
         self._cycle_index += 1
-        self._entries = 0
-        self._exits = 0
+        self._events = CycleEvents()
