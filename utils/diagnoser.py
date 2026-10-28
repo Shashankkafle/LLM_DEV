@@ -40,6 +40,9 @@ class Diagnoser:
         self.cycle_s = cycle_s
         self.regime = NORMAL
         self.extents = ExtentTracker()
+        # Optional callable(cycle_start, network_row, extent_rows), called after
+        # every cycle is logged; lets a watcher print without reading the CSVs.
+        self.cycle_listener = None
         self._cycle_index = 0
         self._last_t = None
         self._events = CycleEvents()
@@ -84,15 +87,19 @@ class Diagnoser:
     def _close_cycle(self):
         cycle_start = self._cycle_index * self.cycle_s
         events = self._events
-        self._log_network_regime(cycle_start, events)
+        network_row = self._log_network_regime(cycle_start, events)
         rows = self.extents.close_cycle(cycle_start, self.movement_flags.tosi_flags(), events)
         for row in rows:
             self._extent_writer.writerow(extent_csv_row(row))
+        if self.cycle_listener is not None:
+            self.cycle_listener(cycle_start, network_row, rows)
         self._cycle_index += 1
         self._events = CycleEvents()
 
     def _log_network_regime(self, cycle_start, events):
         n_active = len(self.movement_flags.active_flags())
         self.regime = next_regime(self.regime, events.entries, events.exits, n_active)
-        self._regime_writer.writerow([cycle_start, n_active, events.entries,
-                                      events.exits, self.regime])
+        network_row = dict(zip(REGIME_COLUMNS, [cycle_start, n_active, events.entries,
+                                                events.exits, self.regime]))
+        self._regime_writer.writerow(network_row.values())
+        return network_row
