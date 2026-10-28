@@ -6,8 +6,12 @@ signal timing, seed, SUMO version), and how the run ended. The manifest is
 saved at run start so a crash still leaves the record, enriched once SUMO is
 up, and finalized (status + wall-clock duration) when the run ends.
 
-Imports only stdlib + configurations, so any module can use it without
-circular imports.
+With movement flags on, args also carries the resolved flag constants and
+cycle_s, and the run's own checks (flag replay verification, scenario gate)
+are recorded at the end.
+
+Imports only stdlib, configurations and the stdlib-only network_topology, so
+any module can use it without circular imports.
 """
 
 import hashlib
@@ -16,11 +20,13 @@ import platform
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from dataclasses import asdict
 from datetime import datetime
 from importlib import metadata
 from pathlib import Path
 
 from configurations import RUN_MANIFEST_FILENAME, RUN_RECORD_SCHEMA_VERSION
+from utils.network_topology import load_surge_spec
 
 # Packages whose versions materially affect results; missing ones are skipped.
 TRACKED_PACKAGES = ["torch", "transformers", "tensorflow", "traci", "sumolib", "numpy"]
@@ -116,6 +122,18 @@ def _blockage_block(args):
     }
 
 
+def surge_block(simulation_config):
+    """The surge spec the route file was generated from, so a run dir is
+    self-describing without the sumocfg; None if there is none or it can't
+    be read (a run must never fail over provenance)."""
+    if not simulation_config:
+        return None
+    try:
+        return load_surge_spec(simulation_config)
+    except Exception:
+        return None
+
+
 def build_manifest(controller, args, conf_name, conf, extra=None):
     """Everything knowable before SUMO starts. args is the argparse Namespace;
     conf is the intersection config (None for replay, which has none)."""
@@ -156,12 +174,35 @@ def build_manifest(controller, args, conf_name, conf, extra=None):
         },
         "sumo": None,
         "blockage": _blockage_block(args),
+        "surge": surge_block(simulation_config),
+        "verification": None,
+        "scenario_gate": None,
         "llm": None,
         "colight": None,
     }
     if extra:
         manifest.update(extra)
     return manifest
+
+
+def add_flag_settings(manifest, flag_config, cycle_s):
+    """Write the FlagConfig and cycle the run actually uses into args, so
+    they are never null there (the v3 batch logged null and so hid that it
+    ran on stale defaults). A copy: args may be the live argparse dict."""
+    manifest["args"] = {**manifest["args"], **asdict(flag_config), "cycle_s": cycle_s}
+
+
+def record_run_checks(run_dir, verification, scenario_gate):
+    """Store the end-of-run checks: verification {passed, first_diff},
+    scenario_gate {rule, passed, first_t}. No-op if the manifest was never
+    written."""
+    path = Path(run_dir) / RUN_MANIFEST_FILENAME
+    if not path.exists():
+        return
+    manifest = json.loads(path.read_text())
+    manifest["verification"] = verification
+    manifest["scenario_gate"] = scenario_gate
+    save_manifest(run_dir, manifest)
 
 
 def add_sumo_runtime(manifest, sumo_cmd):

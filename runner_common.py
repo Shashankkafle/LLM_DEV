@@ -20,9 +20,15 @@ from utils.replay_recorder import ReplayRecorder
 from utils.oversaturation_indices import OversaturationIndices
 from utils.movement_flags import FLAG_COLUMNS, FlagConfig, MovementFlags
 from utils.diagnoser import DEFAULT_CYCLE_S, Diagnoser
+from utils.evaluation_logs import EvaluationLogs
+from utils.lane_state_log import LaneStateLog, LiveNetworkState
+from utils.executor_log import ExecutorLog
+from utils.scenario_gate import scenario_gate_record
 from utils.blockage_manager import BlockageManager, load_scenario
 from utils import llm_activity
-from utils.run_manifest import add_sumo_runtime, save_manifest, finalize_manifest
+from utils.run_manifest import (
+    add_flag_settings, add_sumo_runtime, save_manifest, finalize_manifest, record_run_checks,
+)
 from configurations import (
     DEFAULT_START_PHASE,
     LOGS_DIR_NAME,
@@ -124,21 +130,27 @@ class RunContext:
     and one PhaseHandler per intersection."""
 
     def __init__(self, records_dir, env, recorder, replay_recorder, handlers,
-                 oversaturation, movement_flags=None, diagnoser=None):
+                 oversaturation, executor_log, movement_flags=None, diagnoser=None,
+                 lane_state_log=None):
         self.records_dir = records_dir
         self.env = env
         self.recorder = recorder
         self.replay_recorder = replay_recorder
         self.handlers = handlers
         self.oversaturation = oversaturation
+        # A future executor writes commands.csv / plan_changes.csv through this.
+        self.executor_log = executor_log
         self.movement_flags = movement_flags
         self.diagnoser = diagnoser
+        self.lane_state_log = lane_state_log
 
     def update_observers(self):
         """Read-only per-step observers. Must run before handler.step() so they
         see the signal state that governed the step just simulated."""
         t = self.env.get_current_step()
         self.oversaturation.update(t)
+        if self.lane_state_log is not None:
+            self.lane_state_log.record_step(t)
         if self.diagnoser is not None:
             self.diagnoser.update(t)
 
@@ -156,7 +168,9 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
 
     movement_flag_config (a FlagConfig) turns on MovementFlags and the regime
     Diagnoser in front of it, which takes the single oversaturation listener
-    slot and evaluates once every regime_cycle_s seconds.
+    slot and evaluates once every regime_cycle_s seconds; and with them the
+    evaluation logs (ground_truth.csv, network_metrics.csv) and the lane
+    state they are rebuilt from (lane_halting.csv, lane_entries.csv).
     """
     if movement_flag_config is not None and oversat_listener is not None:
         raise ValueError("movement flags and oversat_listener both need the "
@@ -165,6 +179,7 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
                                                       logs_dir)
     if manifest is not None and movement_flag_config is not None:
         manifest["movement_flags_columns"] = list(FLAG_COLUMNS)
+        add_flag_settings(manifest, movement_flag_config, regime_cycle_s)
     if manifest is not None:
         save_manifest(records_dir, manifest)
     # Copy the scenario into the run dir so the run stays reproducible even if
@@ -189,14 +204,22 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
     recorder.record_initial_load()
     movement_flags = None
     diagnoser = None
+    evaluation_logs = None
     if movement_flag_config is not None:
-        movement_flags = MovementFlags(movement_flag_config, records_dir)
-        diagnoser = Diagnoser(movement_flags, regime_cycle_s, records_dir)
+        blockage_events = blockage_manager.lane_events if blockage_manager is not None else ()
+        movement_flags = MovementFlags(movement_flag_config, records_dir, blockage_events)
+        evaluation_logs = EvaluationLogs(records_dir)
+        diagnoser = Diagnoser(movement_flags, regime_cycle_s, records_dir, evaluation_logs)
         recorder.diagnoser = diagnoser
         oversat_listener = diagnoser
     oversaturation = OversaturationIndices(records_dir, blockage_manager,
                                            shadow=oversat_shadow,
                                            listener=oversat_listener)
+    lane_state_log = None
+    if evaluation_logs is not None:
+        lane_state_log = LaneStateLog(records_dir, oversaturation)
+        evaluation_logs.network_state = LiveNetworkState(recorder, lane_state_log)
+    executor_log = ExecutorLog(records_dir)
     if manifest is not None:
         add_sumo_runtime(manifest, env.cmd)
         save_manifest(records_dir, manifest)
@@ -208,7 +231,26 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
         for intersection_id in env.get_intersections()
     }
     return RunContext(records_dir, env, recorder, replay_recorder, handlers,
-                      oversaturation, movement_flags, diagnoser)
+                      oversaturation, executor_log, movement_flags, diagnoser,
+                      lane_state_log)
+
+
+def _record_run_checks(records_dir):
+    """Replay the run's own logs through the flag verifier and evaluate the
+    scenario gate, and store both in the manifest. A failing check is
+    recorded, never raised: the run itself is already complete."""
+    # Imported here: tools/ is a script folder, and the verifier is only
+    # needed once, at the end of a flagged run.
+    from tools.verify_flags import verification_record
+    try:
+        verification = verification_record(records_dir)
+    except Exception as error:
+        verification = {"passed": False, "first_diff": f"verifier raised {error!r}"}
+    try:
+        gate = scenario_gate_record(records_dir)
+    except Exception as error:
+        gate = {"rule": None, "passed": None, "first_t": None, "error": repr(error)}
+    record_run_checks(records_dir, verification, gate)
 
 
 def _close_and_summarize(ctx, status):
@@ -216,6 +258,7 @@ def _close_and_summarize(ctx, status):
     the final summary -- and finalize the manifest no matter what, so a run dir
     is never left claiming status "running" even if closing or summarizing
     raises. Shared by both control loops so the teardown order cannot drift.
+    A flagged run checks its own logs once they are all closed.
     """
     try:
         ctx.oversaturation.close()
@@ -223,8 +266,13 @@ def _close_and_summarize(ctx, status):
             ctx.diagnoser.close()
         if ctx.movement_flags is not None:
             ctx.movement_flags.close()
+        if ctx.lane_state_log is not None:
+            ctx.lane_state_log.close()
+        ctx.executor_log.close()
         ctx.env.close()
         summary = ctx.recorder.save_final_summary()
+        if ctx.movement_flags is not None:
+            _record_run_checks(ctx.records_dir)
     finally:
         finalize_manifest(ctx.records_dir, status)
         llm_activity.close()

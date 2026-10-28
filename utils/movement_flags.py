@@ -42,7 +42,7 @@ FLAG_COLUMNS = [
     "ratio_end", "halted_count_end", "discharged", "blocked", "skipped",
     "entry_count", "clean_count", "active", "raised_at",
     "held_over", "ratio_start", "sosi_c1", "sosi_c2", "sosi_c3",
-    "branch",
+    "branch", "q_start", "storage", "blocked_event_t",
 ]
 
 
@@ -148,7 +148,19 @@ def update_flag(state, tosi, sosi, green_s, ratio_start, t_close, config):
 
 # --- listener ---------------------------------------------------------------------
 
-def flag_row(result, target, link_indices, skipped, state):
+def last_blockage_event_t(blockage_events, lane, t):
+    """Time of the latest raise or clear of lane's blockage event flag at or
+    before t, or None. blockage_events: (t, lane) pairs in time order."""
+    latest = None
+    for event_t, event_lane in blockage_events:
+        if event_t > t:
+            break
+        if event_lane == lane:
+            latest = event_t
+    return latest
+
+
+def flag_row(result, target, link_indices, skipped, state, blocked_event_t=None):
     return [result.allred, result.tls, result.lane, target,
             ";".join(str(i) for i in link_indices),
             format_value(result.tosi), format_value(result.sosi[target]),
@@ -159,17 +171,24 @@ def flag_row(result, target, link_indices, skipped, state):
             result.held_over, format_value(result.ratio_start),
             result.stop_halted_steps, result.no_exit_steps,
             result.target_halted_steps[target],
-            state.branch]
+            state.branch, format_value(result.halted_count_start),
+            format_value(result.capacity), format_value(blocked_event_t)]
 
 
 class MovementFlags:
     """OversaturationIndices listener holding one FlagState per movement.
 
     A green closes at its all-red onset, so t_close is IntervalResult.allred.
+
+    blockage_events: (t, lane) pairs, one per raise or clear of a blockage
+    event flag, appended in time order by whoever owns the events (the
+    BlockageManager live, the event log in replay). Only read for the
+    blocked_event_t column.
     """
 
-    def __init__(self, config, records_dir):
+    def __init__(self, config, records_dir, blockage_events=()):
         self.config = config
+        self.blockage_events = blockage_events
         self.flags = {}
         self._file = open(records_dir / MOVEMENT_FLAGS_FILENAME, "w", newline="")
         self._writer = csv.writer(self._file)
@@ -188,7 +207,10 @@ class MovementFlags:
                         result.ratio_start, result.allred, self.config)
             skipped = has_missing_input(result.tosi, sosi, result.ratio_start)
             link_indices = tracker.target_link_indices.get(target, [])
-            self._writer.writerow(flag_row(result, target, link_indices, skipped, state))
+            event_t = last_blockage_event_t(self.blockage_events, result.lane,
+                                            result.allred)
+            self._writer.writerow(flag_row(result, target, link_indices, skipped,
+                                           state, event_t))
 
     def active_flags(self):
         return {movement for movement, state in self.flags.items() if state.active}

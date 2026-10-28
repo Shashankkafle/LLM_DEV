@@ -27,6 +27,7 @@ class Extent:
     extent_id: int
     members: frozenset
     regime: str
+    root_lane: str = ""  # the oldest lane in the cycle the extent was born
 
 
 @dataclass
@@ -40,6 +41,8 @@ class ExtentRow:
     regime: str
     newborn: bool
     vanished: bool
+    root_lane: str = ""
+    oldest_lane: str = ""  # the lane identity was carried by; empty when vanished
 
 
 def connected_components(tosi_movements):
@@ -102,14 +105,16 @@ class ExtentTracker:
                                       tosi_movements, events)
             if parent is not None:
                 claimed.add(parent.extent_id)
-            current[row.extent_id] = Extent(row.extent_id, members, row.regime)
+            current[row.extent_id] = Extent(row.extent_id, members, row.regime,
+                                            row.root_lane)
             rows.append(row)
         for extent_id, extent in previous.items():
             if extent_id in claimed:
                 continue
             row = self._vanished_row(cycle_start, extent, events)
             if row.regime != NORMAL:
-                current[extent_id] = Extent(extent_id, extent.members, row.regime)
+                current[extent_id] = Extent(extent_id, extent.members, row.regime,
+                                            extent.root_lane)
             rows.append(row)
         self.extents = current
         return rows
@@ -122,14 +127,18 @@ class ExtentTracker:
         n_conns = count_conns(members, tosi_movements)
         state = NORMAL if newborn else parent.regime
         regime = next_extent_regime(state, entries, exits, n_conns, newborn)
+        oldest = self._oldest(members)
+        root_lane = oldest if newborn else parent.root_lane
         return ExtentRow(cycle_start, extent_id, members, n_conns, entries, exits,
-                         regime, newborn=newborn, vanished=False)
+                         regime, newborn=newborn, vanished=False,
+                         root_lane=root_lane, oldest_lane=oldest)
 
     def _vanished_row(self, cycle_start, extent, events):
         exits = len(extent.members & events.exit_lanes)
         regime = next_extent_regime(extent.regime, 0, exits, 0, newborn=False)
         return ExtentRow(cycle_start, extent.extent_id, frozenset(), 0, 0, exits,
-                         regime, newborn=False, vanished=True)
+                         regime, newborn=False, vanished=True,
+                         root_lane=extent.root_lane)
 
     def _oldest(self, members):
         return min(members, key=lambda lane: (self.first_flagged[lane], lane))

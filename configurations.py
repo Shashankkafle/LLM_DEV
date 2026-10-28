@@ -298,6 +298,21 @@ MOVEMENT_FLAGS_FILENAME = "movement_flags.csv"
 # movement flags are on).
 REGIME_FILENAME = "regime.csv"
 EXTENTS_FILENAME = "extents.csv"
+# Evaluation logs written beside them (utils/evaluation_logs.py): per cycle per
+# lane persistent-queue ground truth, and per cycle network counts.
+GROUND_TRUTH_FILENAME = "ground_truth.csv"
+NETWORK_METRICS_FILENAME = "network_metrics.csv"
+# Lane state the evaluation logs need and no other file holds
+# (utils/lane_state_log.py): halted vehicles per lane at each cycle close, and
+# vehicles entering each lane per step.
+LANE_HALTING_FILENAME = "lane_halting.csv"
+LANE_ENTRIES_FILENAME = "lane_entries.csv"
+# Executor commands and signal-plan changes (utils/executor_log.py); header
+# only for controllers without an executor.
+COMMANDS_FILENAME = "commands.csv"
+PLAN_CHANGES_FILENAME = "plan_changes.csv"
+# Offline evaluation of one run (tools/eval_metrics.py).
+EVAL_METRICS_FILENAME = "eval_metrics.json"
 DECISIONS_FILENAME = "decisions.jsonl"
 PHASE_SEQUENCE_FILENAME_SUFFIX = "_phase_sequence.jsonl"
 

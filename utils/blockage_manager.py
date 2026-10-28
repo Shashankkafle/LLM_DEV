@@ -169,6 +169,9 @@ class BlockageManager:
         self._event_log_path = None   # set_event_log; None = events not logged
         self._event_context = {}
         self._current_step = None
+        # (sim time, lane) per raise or clear of a lane's event flag, i.e. per
+        # change of get_blocked_lane_ids(). Read by MovementFlags.
+        self.lane_events = []
 
     def set_event_log(self, path, context=None):
         """Append the physical blockage lifecycle (activation, placement
@@ -203,6 +206,7 @@ class BlockageManager:
         self._pending_obstacles.clear()
         self._original_speeds.clear()
         self._deferral_warned.clear()
+        self.lane_events.clear()
 
     def validate_against_network(self):
         """Fail fast right after the simulation starts instead of mid-run:
@@ -240,6 +244,7 @@ class BlockageManager:
 
     def _activate(self, blockage):
         self._active[blockage["blockage_id"]] = blockage
+        self.lane_events.append((self._current_step, blockage["lane_id"]))
         print(f"[blockage] activating '{blockage['blockage_id']}' on "
               f"{blockage['lane_id']} ({blockage['method']})")
         self._log_event("activated", blockage,
@@ -360,5 +365,6 @@ class BlockageManager:
             traci.lane.setMaxSpeed(
                 blockage["lane_id"], self._original_speeds.pop(blockage["lane_id"]))
         self._active.pop(bid, None)
+        self.lane_events.append((self._current_step, blockage["lane_id"]))
         print(f"[blockage] deactivated '{bid}'")
         self._log_event("deactivated", blockage)

@@ -76,6 +76,10 @@ def exited_ids(prev_ids, curr_ids):
     return set(prev_ids) - set(curr_ids)
 
 
+def entered_ids(prev_ids, curr_ids):
+    return set(curr_ids) - set(prev_ids)
+
+
 def has_halted_near_stop(vehicles, lane_length, window=STOP_LINE_WINDOW_M):
     """SOSI rule (a). vehicles: iterable of (id, speed, lane_position)."""
     return any(speed < HALT_SPEED_MPS and position >= lane_length - window
@@ -396,6 +400,7 @@ class OversaturationIndices:
         self.tls_lanes = lanes_by_tls(self.trackers)
         self.lane_lengths = self._observed_lane_lengths()
         self._prev = {lane: EMPTY_SNAPSHOT for lane in self.lane_lengths}
+        self._entries = {}
         self._subscribe_lanes_and_signals()
         self._indices_file = open(records_dir / OVERSATURATION_INDICES_FILENAME, "w", newline="")
         self._indices_writer = csv.writer(self._indices_file)
@@ -468,7 +473,21 @@ class OversaturationIndices:
                 self._prev[tracker.lane], curr[tracker.lane], curr,
                 tracker.lane in blocked_lanes)
             self._record(tracker, observation)
+        self._entries = {tracker.lane: len(entered_ids(self._prev[tracker.lane].ids,
+                                                       curr[tracker.lane].ids))
+                         for tracker in self.trackers}
         self._prev = curr
+
+    def lane_halting(self):
+        """{signalized lane: halted vehicles} in the snapshot of the last
+        update(t), i.e. at t; obstacle excluded."""
+        return {tracker.lane: len(self._prev[tracker.lane].halted_ids)
+                for tracker in self.trackers}
+
+    def lane_entries(self):
+        """{signalized lane: vehicles that entered it between the last two
+        updates}. A lane change counts as entering the new lane."""
+        return dict(self._entries)
 
     def _record(self, tracker, observation):
         if observation.closed is not None:

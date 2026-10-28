@@ -116,6 +116,21 @@ def test_extent_with_no_component_vanishes():
         (1, frozenset(), 1, True)
 
 
+def test_root_lane_outlives_the_root_while_oldest_lane_moves_on():
+    tracker = ExtentTracker()
+    rows = run_cycles(tracker, [
+        ({(NS_MIDDLE, NS_DOWNSTREAM)}, events(entries=[NS_MIDDLE])),
+        ({(NS_MIDDLE, NS_DOWNSTREAM), (NS_DOWNSTREAM, EXIT_LANE)},
+         events(entries=[NS_DOWNSTREAM])),
+        ({(NS_DOWNSTREAM, EXIT_LANE)}, events(exits=[NS_MIDDLE])),
+        (set(), events(exits=[NS_DOWNSTREAM])),
+    ])
+    assert [(row.extent_id, row.root_lane, row.oldest_lane)
+            for cycle_rows in rows for row in cycle_rows] == [
+        (1, NS_MIDDLE, NS_MIDDLE), (1, NS_MIDDLE, NS_MIDDLE),
+        (1, NS_MIDDLE, NS_DOWNSTREAM), (1, NS_MIDDLE, "")]
+
+
 # --- regime per extent -------------------------------------------------------------
 
 MIDDLE_ONLY = {(NS_MIDDLE, NS_DOWNSTREAM)}

@@ -31,6 +31,13 @@ CYCLE_S = 60
 CAPACITY = 20
 # SOSI that loses exactly L = 5 s of a 30 s green.
 SOSI_AT_L = 5 / GREEN_S
+# movement_flags.csv as the v3 shadow batch logged it.
+V3_COLUMNS = [
+    "t_close", "tls", "lane", "target_lane", "link_indices", "tosi", "sosi",
+    "ratio_end", "halted_count_end", "discharged", "blocked", "skipped",
+    "entry_count", "clean_count", "active", "raised_at", "held_over",
+    "ratio_start", "sosi_c1", "sosi_c2", "sosi_c3",
+]
 
 
 def new_tracker():
@@ -280,17 +287,32 @@ def test_csv_rows_and_columns():
             reader = csv.DictReader(f)
             rows = list(reader)
         assert reader.fieldnames == FLAG_COLUMNS
-    assert FLAG_COLUMNS[-1] == "branch"
+    # The v3 columns plus branch keep their order; new columns only append.
+    assert FLAG_COLUMNS[:22] == V3_COLUMNS + ["branch"]
+    assert FLAG_COLUMNS[22:] == ["q_start", "storage", "blocked_event_t"]
     assert len(rows) == 3 * 2
     first = rows[0]
     assert first["target_lane"] == TARGET and first["link_indices"] == "0;1"
     assert rows[1]["target_lane"] == OTHER_TARGET and rows[1]["link_indices"] == "2"
     assert (first["tosi"], first["ratio_start"], first["active"], first["raised_at"],
             first["branch"]) == ("0.2000", "0.6000", "1", str(interval(0).allred), "T")
+    assert (first["q_start"], first["storage"], first["blocked_event_t"]) == ("12", "20", "")
     skipped, blocked = rows[2], rows[4]
     assert (skipped["skipped"], skipped["tosi"], skipped["active"]) == ("1", "", "1")
     assert (blocked["blocked"], blocked["skipped"], blocked["active"], blocked["branch"]) == \
         ("1", "1", "1", "T")
+
+
+def test_blocked_event_t_is_the_latest_raise_or_clear_up_to_the_green_close():
+    events = [(50, LANE), (60, "other_lane"), (130, LANE)]
+    with tempfile.TemporaryDirectory() as tmp:
+        flags = MovementFlags(FlagConfig(), Path(tmp), blockage_events=events)
+        # allred of greens 0..2 is 33, 93, 153.
+        feed(flags, [interval(0), interval(1), interval(2)])
+        flags.close()
+        with open(Path(tmp) / MOVEMENT_FLAGS_FILENAME, newline="") as f:
+            rows = [row for row in csv.DictReader(f) if row["target_lane"] == TARGET]
+    assert [row["blocked_event_t"] for row in rows] == ["", "50", "130"]
 
 
 if __name__ == "__main__":

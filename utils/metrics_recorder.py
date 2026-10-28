@@ -119,6 +119,9 @@ class MetricsRecorder:
         self.arrived_cum = 0
         self.peak_vehicles_in_network = 0
         self.peak_vehicles_in_network_time_s = None
+        # The last recorded step's counts, read by the network_metrics.csv logger.
+        self.last_vehicles_in_network = None
+        self.last_halting_total = None
 
         # Per-edge series (edge_timeseries.csv), built from the same per-vehicle
         # loop as halting_total so the two agree exactly; and per-surge series
@@ -291,6 +294,8 @@ class MetricsRecorder:
         average_queue_length; pending are vehicles SUMO could not insert yet."""
         self.departed_cum += departed
         self.arrived_cum += arrived
+        self.last_vehicles_in_network = vehicles_in_network
+        self.last_halting_total = halting
         if vehicles_in_network > self.peak_vehicles_in_network:
             self.peak_vehicles_in_network = vehicles_in_network
             self.peak_vehicles_in_network_time_s = _format_sim_time(current_time)
