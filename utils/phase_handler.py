@@ -73,23 +73,3 @@ class PhaseHandler:
             
         self.switch_phase = False
 
-
-    def record_replay(self,step,intersection,phase,phase_name):
-            """
-            Records the necessary information to replay the simulation later.
-            This can include the sequence of states, actions, and any random seeds used.
-            """
-            self.replay_record[step] = {
-                "intersection": intersection,
-                "phase": phase,
-                "phase_name": phase_name
-            }
-
-    def switch_phase(self):
-        return self._switch_phase
-    
-    def current_phase(self):
-        return self._current_phase
-    
-            
-
