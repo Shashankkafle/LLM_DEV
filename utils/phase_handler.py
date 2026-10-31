@@ -13,6 +13,7 @@ class PhaseHandler:
         self.replay_recorder = replay_recorder
         self.phases = self.conf["phases"].keys()
         self.duration = self.conf["global_settings"]["default_green_duration"]
+        self.green_duration = self.conf["global_settings"]["default_green_duration"]
         self.env = env
         self.intersection_id = intersection_id
         if start_phase in self.phases:
@@ -27,7 +28,7 @@ class PhaseHandler:
             self.duration -= 1
             if self.duration <= 0:
                 self.current_phase_type = "GREEN"
-                self.duration = self.conf["global_settings"]["default_green_duration"]
+                self.duration = self.green_duration
                 if self.next_phase is None:
                     raise ValueError("Next phase has not been set before switching from ALL_RED to GREEN.")
                 self.current_phase = self.next_phase
@@ -50,15 +51,20 @@ class PhaseHandler:
         else:
             raise ValueError(f"Unknown phase type: {self.current_phase_type}")
         
-    def activate_phase(self, new_phase):
+    def activate_phase(self, new_phase, green=None):
         if not self.switch_phase:
             raise ValueError("Cannot switch phase yet. Current phase duration has not ended.")
         
         if new_phase not in self.phases:
             raise ValueError(f"Phase {new_phase} is not a valid phase.")
         
+        global_settings = self.conf["global_settings"]
+        if green is None:
+            green = global_settings["default_green_duration"]
+        self.green_duration = min(max(green, global_settings["min_green"]), global_settings["max_green"])
+
         if new_phase == self.current_phase:
-            self.duration = self.conf["global_settings"]["default_green_duration"]  # Reset duration if the same phase is activated again
+            self.duration = self.green_duration  # Reset duration if the same phase is activated again
         
         if new_phase != self.current_phase:
             phase_to_set = self.conf["phases"][self.current_phase]["yellow"]

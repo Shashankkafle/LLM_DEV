@@ -15,11 +15,12 @@ Usage:
         --test_name maxpressure_hz4x4
 """
 import argparse
+from dataclasses import dataclass
 
 import traci
 
 from runner_common import (
-    setup_run, run_control_loop, build_blockage_manager,
+    setup_run, run_control_loop, build_blockage_manager, _phase_and_green,
     add_movement_flag_args, movement_flag_config_from_args, regime_cycle_s_from_args,
 )
 from utils.run_manifest import build_manifest
@@ -104,17 +105,95 @@ class MaxPressureController:
         return handler.current_phase, info  # unreachable; keeps the type checker happy
 
 
+@dataclass
+class CyclicPlan:
+    """A fixed cycle: phases served in `order`, each for splits[phase] green
+    seconds. offset is stored and reported but not yet applied."""
+    order: list[str]
+    splits: dict[str, int]
+    offset: int
+    yellow_duration: int
+    red_duration: int
+
+    @property
+    def cycle_length(self):
+        return sum(self.splits[p] + self.yellow_duration + self.red_duration
+                   for p in self.order)
+
+
+def default_cyclic_plan(conf):
+    settings = conf["global_settings"]
+    order = list(conf["phases"])
+    return CyclicPlan(
+        order=order,
+        splits={phase: settings["default_green_duration"] for phase in order},
+        offset=0,
+        yellow_duration=settings["yellow_duration"],
+        red_duration=settings["red_duration"],
+    )
+
+
+def plan_transition_type(old_plan, new_plan):
+    if old_plan.cycle_length != new_plan.cycle_length:
+        return "cycle_change"
+    if old_plan.splits != new_plan.splits:
+        return "split_change"
+    return "plan_change"
+
+
+class CyclicController:
+    """Serve each intersection's CyclicPlan in order, with the plan's green
+    split per phase. Every intersection starts on the plan given here; a plan
+    counts as installed for an intersection once set_plan or choose has used it."""
+
+    def __init__(self, conf, plan):
+        self.conf = conf
+        self.default_plan = plan
+        self.plans = {}
+
+    def set_plan(self, intersection_id, new_plan, t, executor_log):
+        """Install new_plan. Only replacing a different, already-installed plan
+        is a plan change; the initial install logs nothing."""
+        old_plan = self.plans.get(intersection_id)
+        self.plans[intersection_id] = new_plan
+        if old_plan is None or old_plan == new_plan:
+            return
+        executor_log.log_plan_change(
+            t, intersection_id, old_plan.cycle_length, new_plan.cycle_length,
+            old_plan.splits, new_plan.splits, plan_transition_type(old_plan, new_plan))
+
+    def choose(self, intersection_id, handler):
+        plan = self.plans.setdefault(intersection_id, self.default_plan)
+        # A phase outside the order (e.g. the start phase) restarts the cycle.
+        if handler.current_phase in plan.order:
+            cycle_index = (plan.order.index(handler.current_phase) + 1) % len(plan.order)
+        else:
+            cycle_index = 0
+        next_phase = plan.order[cycle_index]
+        green = plan.splits[next_phase]
+        controller_state = {
+            "cycle_index": cycle_index,
+            "green": green,
+            "cycle_length": plan.cycle_length,
+            "offset": plan.offset,
+        }
+        return (next_phase, green), controller_state
+
+
 def build_controller(name, conf, intersection_ids):
     if name == "fixedtime":
         return FixedTimeController(conf)
     if name == "maxpressure":
         return MaxPressureController(conf, intersection_ids)
+    if name == "cyclic":
+        return CyclicController(conf, default_cyclic_plan(conf))
     raise ValueError(f"Unknown controller: {name}")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--controller", choices=["fixedtime", "maxpressure"], required=True)
+    parser.add_argument("--controller", choices=["fixedtime", "maxpressure", "cyclic"],
+                        required=True)
     parser.add_argument("--test_name", type=str, default=None,
                         help="Output folder name prefix. Defaults to the controller name.")
     parser.add_argument("--run_group", type=str, default=None,
@@ -178,7 +257,8 @@ def main(args):
     print("-" * 50)
 
     def decide(step, intersection_id, handler):
-        phase, controller_state = controller.choose(intersection_id, handler)
+        decision, controller_state = controller.choose(intersection_id, handler)
+        phase, _green = _phase_and_green(decision)
         state_data = ctx.env.get_state(intersection_id)
         ctx.recorder.record_simple_decision(
             step=step, intersection_id=intersection_id,
@@ -187,7 +267,7 @@ def main(args):
             controller_state=controller_state,
             traffic_state=state_data.get("movement_states"),
         )
-        return phase
+        return decision
 
     run_control_loop(ctx, args.simulation_steps, decide)
 

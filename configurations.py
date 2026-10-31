@@ -57,6 +57,8 @@ INTERSECTION_CONFIGS = {
             "default_green_duration": 30,
             "yellow_duration": 3,
             "red_duration": 2,
+            "min_green": 5,
+            "max_green": 60,
         },
         "phases": {
             "ETWT": {
@@ -96,6 +98,8 @@ INTERSECTION_CONFIGS = {
             "default_green_duration": 30,
             "yellow_duration": 3,
             "red_duration": 2,
+            "min_green": 5,
+            "max_green": 60,
         },
         "phases": {
             "ETWT": {

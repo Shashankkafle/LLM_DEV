@@ -279,11 +279,21 @@ def _close_and_summarize(ctx, status):
     return summary
 
 
+def _phase_and_green(decision):
+    """Split a controller decision into (phase, green). A bare phase name means
+    green=None, i.e. the handler's default green duration."""
+    if isinstance(decision, tuple):
+        phase, green = decision
+        return phase, green
+    return decision, None
+
+
 def run_control_loop(ctx, simulation_steps, decide):
     """Drive the simulation with per-intersection decisions. Returns the final
     summary dict.
 
-    ``decide(step, intersection_id, handler)`` -> next phase name, called
+    ``decide(step, intersection_id, handler)`` -> next phase name, or a
+    (phase, green) tuple to also set the green duration, called
     whenever that intersection's green window ends. The loop owns the shared
     measurement behavior:
       - one network-wide AWT sample per decision point,
@@ -301,9 +311,9 @@ def run_control_loop(ctx, simulation_steps, decide):
             for intersection_id, handler in ctx.handlers.items():
                 handler.step()
                 if handler.switch_phase:
-                    next_phase = decide(step, intersection_id, handler)
+                    phase, green = _phase_and_green(decide(step, intersection_id, handler))
                     ctx.recorder.record_decision_wait()
-                    handler.activate_phase(next_phase)
+                    handler.activate_phase(phase, green=green)
             if traci.simulation.getMinExpectedNumber() <= 0:
                 print(f"No more vehicles expected at step {step}, stopping early.")
                 break
@@ -318,7 +328,8 @@ def run_control_loop_batched(ctx, simulation_steps, decide_batch):
     is handed to ``decide_batch`` together, so a batched controller can run
     their decisions as one inference call. Returns the final summary dict.
 
-    ``decide_batch(step, pending)`` -> {intersection_id: next_phase}, where
+    ``decide_batch(step, pending)`` -> {intersection_id: next_phase}, where each
+    value is a phase name or a (phase, green) tuple as in run_control_loop, and
     pending is the list of (intersection_id, handler) switching this step;
     decide_batch owns all per-decision recording.
 
@@ -345,8 +356,9 @@ def run_control_loop_batched(ctx, simulation_steps, decide_batch):
             if pending:
                 next_phases = decide_batch(step, pending)
                 for intersection_id, handler in pending:
+                    phase, green = _phase_and_green(next_phases[intersection_id])
                     ctx.recorder.record_decision_wait()
-                    handler.activate_phase(next_phases[intersection_id])
+                    handler.activate_phase(phase, green=green)
             if traci.simulation.getMinExpectedNumber() <= 0:
                 print(f"No more vehicles expected at step {step}, stopping early.")
                 break
