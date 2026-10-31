@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -46,6 +47,11 @@ def _format_sim_time(t):
     return int(t) if float(t).is_integer() else t
 
 
+def _nearest_rank_percentile(sorted_values, fraction):
+    rank = max(1, math.ceil(len(sorted_values) * fraction))
+    return sorted_values[rank - 1]
+
+
 def _count_on_edge(per_edge, road, halted):
     edge = INTERNAL_EDGE_BUCKET if road.startswith(":") else road
     vehicles, halting = per_edge.get(edge, (0, 0))
@@ -89,6 +95,10 @@ class MetricsRecorder:
         self.depart_times = {}         # veh -> sim time it entered the network
         self.waiting_accumulated = {}  # veh -> total seconds spent stopped so far
         self.completed_trips = {}      # veh -> {"travel_time", "waiting_time"} once it arrives
+        # Starvation tail: waiting_accumulated sums every stop, so it cannot
+        # tell one 300 s stop from ten 30 s stops. Track the unbroken stop.
+        self.current_stop_s = {}       # veh -> seconds stopped without moving, 0 once it moves
+        self.longest_stop_s = {}       # veh -> longest single unbroken stop so far
 
         # CityFlow-clock ATT: LLMTSCS times only the dwell on intersection
         # approach lanes, so junction crossings and the final route edge (the
@@ -238,6 +248,7 @@ class MetricsRecorder:
                 self.waiting_accumulated[vehicle] = (
                     self.waiting_accumulated.get(vehicle, 0.0) + step_length
                 )
+            self._update_stop_streak(vehicle, halted, step_length)
             road = traci.vehicle.getRoadID(vehicle)
             if not road.startswith(":") and road != self.final_edges.get(vehicle):
                 self.approach_time[vehicle] = (
@@ -278,6 +289,32 @@ class MetricsRecorder:
         if self.edge_series:
             self._record_edge_timeseries(current_time, per_edge)
         self._record_surge_timeseries(current_time, pending_ids)
+
+    def _update_stop_streak(self, vehicle, halted, step_length):
+        if not halted:
+            self.current_stop_s[vehicle] = 0.0
+            return
+        streak = self.current_stop_s.get(vehicle, 0.0) + step_length
+        self.current_stop_s[vehicle] = streak
+        if streak > self.longest_stop_s.get(vehicle, 0.0):
+            self.longest_stop_s[vehicle] = streak
+
+    def _longest_stop_summary(self):
+        """Max and 95th percentile of each departed vehicle's longest unbroken
+        stop. Vehicles that never stopped count as 0, and vehicles still in
+        the network at the horizon count with their stop so far."""
+        longest = sorted(self.longest_stop_s.get(v, 0.0) for v in self.departed_ids)
+        if not longest:
+            return {"max_consecutive_wait_s": None,
+                    "max_consecutive_wait_vehicle": None,
+                    "p95_consecutive_wait_s": None}
+        worst_vehicle = max(self.departed_ids,
+                            key=lambda v: self.longest_stop_s.get(v, 0.0))
+        return {
+            "max_consecutive_wait_s": round(longest[-1], 2),
+            "max_consecutive_wait_vehicle": worst_vehicle,
+            "p95_consecutive_wait_s": round(_nearest_rank_percentile(longest, 0.95), 2),
+        }
 
     def _count_surge_id(self, vehicle, counter):
         match = SURGE_ID_PATTERN.match(vehicle)
@@ -481,6 +518,7 @@ class MetricsRecorder:
             if len(self.decision_wait_averages) > 0 else 0
         )
         summary["average_per_decision_wait_s"] = average_per_decision_wait_s
+        summary.update(self._longest_stop_summary())
         # The raw samples behind the mean, so distributions/time slices can be
         # analyzed later without rerunning (~one float per decision point).
         summary["decision_wait_samples"] = [
