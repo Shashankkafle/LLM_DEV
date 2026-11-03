@@ -42,12 +42,19 @@ RED = "r"
 YELLOW = "y"
 GREEN_CHARS = ("G", "g")
 
-VEHICLE_VARS = [tc.VAR_SPEED, tc.VAR_LANEPOSITION]
+VEHICLE_VARS = [tc.VAR_SPEED, tc.VAR_LANEPOSITION, tc.VAR_LANE_ID]
+
+STOPLINE_EXIT = "stopline"
+LANE_CHANGE_EXIT = "lanechange"
+OTHER_EXIT = "other"
+EXIT_KINDS = (STOPLINE_EXIT, LANE_CHANGE_EXIT, OTHER_EXIT)
 
 INDICES_COLUMNS = [
     "t_green_start", "t_green_end", "t_allred", "tls", "lane", "target_lane",
     "green_s", "tosi", "discharged", "sosi", "ratio_start", "ratio_end",
     "blocked_flag",
+    "entered_red", "entered_green", "exited_green", "first_green",
+    "lc_out_green", "other_out_green", "stopline_out_red", "lc_out_red", "other_out_red",
 ]
 SHADOW_COLUMNS = ["t", "lane", "halted_count", "exit_count"]
 
@@ -78,6 +85,34 @@ def exited_ids(prev_ids, curr_ids):
 
 def entered_ids(prev_ids, curr_ids):
     return set(curr_ids) - set(prev_ids)
+
+
+def lane_edge(lane_id):
+    """SUMO lane ids are always '<edge id>_<lane index>'."""
+    return lane_id.rsplit("_", 1)[0]
+
+
+def classify_exit(lane_now, source_lane, link_targets):
+    """Why a vehicle left source_lane, judged only by the lane it is on now
+    (None or "" when it is on no lane: arrived, removed, teleporting). Never
+    looks ahead: a teleported vehicle reappears far away and would be
+    misread. A 1 s step can jump the short junction-internal lane, so landing
+    on a link target counts as a stop-line crossing too."""
+    if not lane_now:
+        return OTHER_EXIT
+    if lane_now.startswith(":") or lane_now in link_targets:
+        return STOPLINE_EXIT
+    if lane_edge(lane_now) == lane_edge(source_lane):
+        return LANE_CHANGE_EXIT
+    return OTHER_EXIT
+
+
+def zero_exit_counts():
+    return {kind: 0 for kind in EXIT_KINDS}
+
+
+def subtract_exit_counts(later, earlier):
+    return {kind: later[kind] - earlier[kind] for kind in EXIT_KINDS}
 
 
 def has_halted_near_stop(vehicles, lane_length, window=STOP_LINE_WINDOW_M):
@@ -168,6 +203,7 @@ class StepInputs:
     halted_near_stop: bool
     exit_count: int
     targets: list
+    entry_count: int = 0
 
 
 @dataclass
@@ -194,6 +230,20 @@ class IntervalResult:
     stop_halted_steps: int
     no_exit_steps: int
     target_halted_steps: dict
+    # Lane flow counts. The green window is [green_start, allred), yellow
+    # included, the same window discharged covers; the red window runs from
+    # the previous green's allred (t=0 on the first green) to green_start.
+    # Exits are split by classify_exit; exited_green is stop-line exits only.
+    # None when not measured (synthetic or replayed results).
+    entered_red: object = None
+    entered_green: object = None
+    exited_green: object = None
+    first_green: object = None
+    lc_out_green: object = None
+    other_out_green: object = None
+    stopline_out_red: object = None
+    lc_out_red: object = None
+    other_out_red: object = None
 
     @property
     def green_s(self):
@@ -211,6 +261,8 @@ class OpenGreen:
     blocked_steps: dict
     target_halted_steps: dict
     blocked_flag: bool
+    entries_at_start: int
+    exits_at_start: dict
     green_end: object = None
     stop_halted_steps: int = 0
     no_exit_steps: int = 0
@@ -240,10 +292,19 @@ class LaneGreenTracker:
         self.capacity = storage_capacity(lane_length)
         self.open_green = None
         self.completed_greens = 0
+        # Running totals over the whole run, obstacle excluded (the snapshots
+        # already drop it). A lane change into this lane counts as an entry.
+        self.entries_total = 0
+        self.exits_total = zero_exit_counts()
+        self.entries_at_last_close = 0
+        self.exits_at_last_close = zero_exit_counts()
 
-    def observe(self, tau, signal, prev, curr, target_snapshots, lane_blocked):
+    def observe(self, tau, signal, prev, curr, target_snapshots, lane_blocked,
+                vehicle_lanes=None):
         """Advance one step. tau labels the second whose signal is `signal`;
-        prev is the snapshot at tau, curr the one at tau+1."""
+        prev is the snapshot at tau, curr the one at tau+1. vehicle_lanes
+        maps vehicle id -> lane at tau+1, for classifying exits; a vehicle
+        missing from it is on no lane."""
         green = is_green(signal)
         observation = Observation(step=None)
         if self.open_green is not None:
@@ -257,22 +318,34 @@ class LaneGreenTracker:
         if green and self.open_green is None:
             self.open_green = self._start(tau, prev, lane_blocked)
             observation.green_started = True
-        observation.step = self._evaluate_step(tau, signal, prev, curr, target_snapshots)
+        observation.step = self._evaluate_step(tau, signal, prev, curr, target_snapshots,
+                                               vehicle_lanes or {})
         return observation
 
     def _start(self, tau, prev, lane_blocked):
         return OpenGreen(green_start=tau, halted_at_start=prev.halted_ids,
                          blocked_steps={target: 0 for target in self.targets},
                          target_halted_steps={target: 0 for target in self.targets},
-                         blocked_flag=lane_blocked)
+                         blocked_flag=lane_blocked,
+                         entries_at_start=self.entries_total,
+                         exits_at_start=dict(self.exits_total))
 
     def _is_counted_green_second(self, tau):
         green = self.open_green
         return (green is not None and green.green_end is None
                 and tau - green.green_start >= SOSI_SKIP_STEPS)
 
-    def _evaluate_step(self, tau, signal, prev, curr, target_snapshots):
-        exit_count = len(exited_ids(prev.ids, curr.ids))
+    def _count_exits(self, exited, vehicle_lanes):
+        for vehicle_id in exited:
+            kind = classify_exit(vehicle_lanes.get(vehicle_id), self.lane, self.targets)
+            self.exits_total[kind] += 1
+
+    def _evaluate_step(self, tau, signal, prev, curr, target_snapshots, vehicle_lanes):
+        exited = exited_ids(prev.ids, curr.ids)
+        exit_count = len(exited)
+        entry_count = len(entered_ids(prev.ids, curr.ids))
+        self._count_exits(exited, vehicle_lanes)
+        self.entries_total += entry_count
         counted = self._is_counted_green_second(tau)
         if counted and curr.halted_near_stop:
             self.open_green.stop_halted_steps += 1
@@ -290,12 +363,18 @@ class LaneGreenTracker:
         return StepInputs(t=tau + 1, lane=self.lane, signal=signal,
                           vehicle_count=len(curr.ids), halted_count=len(curr.halted_ids),
                           halted_near_stop=curr.halted_near_stop, exit_count=exit_count,
-                          targets=targets)
+                          targets=targets, entry_count=entry_count)
 
     def _close(self, allred, prev):
         green = self.open_green
         self.open_green = None
+        first_green = self.completed_greens == 0
         self.completed_greens += 1
+        entered_red = green.entries_at_start - self.entries_at_last_close
+        exits_red = subtract_exit_counts(green.exits_at_start, self.exits_at_last_close)
+        exits_green = subtract_exit_counts(self.exits_total, green.exits_at_start)
+        self.entries_at_last_close = self.entries_total
+        self.exits_at_last_close = dict(self.exits_total)
         green_s = green.green_end - green.green_start
         tosi, discharged = compute_tosi(green.halted_at_start, prev.ids, green_s)
         if green.blocked_flag:
@@ -316,6 +395,15 @@ class LaneGreenTracker:
             stop_halted_steps=green.stop_halted_steps,
             no_exit_steps=green.no_exit_steps,
             target_halted_steps=dict(green.target_halted_steps),
+            entered_red=entered_red,
+            entered_green=self.entries_total - green.entries_at_start,
+            exited_green=exits_green[STOPLINE_EXIT],
+            first_green=first_green,
+            lc_out_green=exits_green[LANE_CHANGE_EXIT],
+            other_out_green=exits_green[OTHER_EXIT],
+            stopline_out_red=exits_red[STOPLINE_EXIT],
+            lc_out_red=exits_red[LANE_CHANGE_EXIT],
+            other_out_red=exits_red[OTHER_EXIT],
         )
 
 
@@ -329,6 +417,16 @@ def format_value(value):
     return value
 
 
+def flow_values(result):
+    """The lane flow counts as CSV cells, in INDICES_COLUMNS order."""
+    first_green = None if result.first_green is None else int(result.first_green)
+    return [format_value(result.entered_red), format_value(result.entered_green),
+            format_value(result.exited_green), format_value(first_green),
+            format_value(result.lc_out_green), format_value(result.other_out_green),
+            format_value(result.stopline_out_red), format_value(result.lc_out_red),
+            format_value(result.other_out_red)]
+
+
 def interval_rows(result):
     """One CSV row per movement (lane -> target lane) of a completed green."""
     for target in result.blocked_steps:
@@ -336,7 +434,7 @@ def interval_rows(result):
                result.lane, target, result.green_s, format_value(result.tosi),
                result.discharged, format_value(result.sosi[target]),
                format_value(result.ratio_start), format_value(result.ratio_end),
-               int(result.blocked_flag)]
+               int(result.blocked_flag), *flow_values(result)]
 
 
 # --- TraCI wrapper ---------------------------------------------------------------
@@ -441,6 +539,9 @@ class OversaturationIndices:
         return traci.vehicle.getAllSubscriptionResults()
 
     def _snapshots(self):
+        """(snapshot per observed lane, vehicle id -> current lane). The lane
+        map covers every vehicle ever seen on an observed lane that is still
+        in the network, so it locates vehicles that just left one."""
         lane_results = traci.lane.getAllSubscriptionResults()
         # Obstacles are dropped before subscribing: BlockageManager removes
         # them with vehicle.remove, after which SUMO prints a "not known"
@@ -454,7 +555,8 @@ class OversaturationIndices:
             vehicles = [(v, states[v][tc.VAR_SPEED], states[v][tc.VAR_LANEPOSITION])
                         for v in ids]
             snapshots[lane] = build_lane_snapshot(vehicles, self.lane_lengths[lane])
-        return snapshots
+        vehicle_lanes = {v: state[tc.VAR_LANE_ID] for v, state in states.items()}
+        return snapshots, vehicle_lanes
 
     def _blocked_lanes(self):
         if self.blockage_manager is None:
@@ -463,19 +565,19 @@ class OversaturationIndices:
 
     def update(self, t):
         tau = t - 1
-        curr = self._snapshots()
+        curr, vehicle_lanes = self._snapshots()
         signal_results = traci.trafficlight.getAllSubscriptionResults()
         blocked_lanes = self._blocked_lanes()
+        entries = {}
         for tracker in self.trackers:
             state = signal_results[tracker.tls][tc.TL_RED_YELLOW_GREEN_STATE]
             observation = tracker.observe(
                 tau, lane_signal(state, tracker.link_indices),
                 self._prev[tracker.lane], curr[tracker.lane], curr,
-                tracker.lane in blocked_lanes)
+                tracker.lane in blocked_lanes, vehicle_lanes)
             self._record(tracker, observation)
-        self._entries = {tracker.lane: len(entered_ids(self._prev[tracker.lane].ids,
-                                                       curr[tracker.lane].ids))
-                         for tracker in self.trackers}
+            entries[tracker.lane] = observation.step.entry_count
+        self._entries = entries
         self._prev = curr
 
     def lane_halting(self):

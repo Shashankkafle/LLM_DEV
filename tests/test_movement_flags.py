@@ -289,7 +289,10 @@ def test_csv_rows_and_columns():
         assert reader.fieldnames == FLAG_COLUMNS
     # The v3 columns plus branch keep their order; new columns only append.
     assert FLAG_COLUMNS[:22] == V3_COLUMNS + ["branch"]
-    assert FLAG_COLUMNS[22:] == ["q_start", "storage", "blocked_event_t"]
+    assert FLAG_COLUMNS[22:] == ["q_start", "storage", "blocked_event_t",
+                                 "entered_red", "entered_green", "exited_green",
+                                 "first_green", "lc_out_green", "other_out_green",
+                                 "stopline_out_red", "lc_out_red", "other_out_red"]
     assert len(rows) == 3 * 2
     first = rows[0]
     assert first["target_lane"] == TARGET and first["link_indices"] == "0;1"

@@ -130,6 +130,16 @@ class LoggedGreen:
     no_exit_steps: int
     sosi: dict = field(default_factory=dict)
     target_halted_steps: dict = field(default_factory=dict)
+    # None for runs logged before the flow columns existed.
+    entered_red: object = None
+    entered_green: object = None
+    exited_green: object = None
+    first_green: object = None
+    lc_out_green: object = None
+    other_out_green: object = None
+    stopline_out_red: object = None
+    lc_out_red: object = None
+    other_out_red: object = None
 
 
 def parse_float(text):
@@ -138,6 +148,10 @@ def parse_float(text):
 
 def parse_int(text):
     return None if text == "" else int(text)
+
+
+def parse_flag(text):
+    return None if text == "" else text == "1"
 
 
 def parse_link_indices(text):
@@ -180,7 +194,16 @@ def new_logged_green(row, green_s, network):
         halted_count_end=int(row["halted_count_end"]), capacity=storage,
         discharged=int(row["discharged"]),
         blocked_flag=row["blocked"] == "1", held_over=int(row["held_over"]),
-        stop_halted_steps=int(row["sosi_c1"]), no_exit_steps=int(row["sosi_c2"]))
+        stop_halted_steps=int(row["sosi_c1"]), no_exit_steps=int(row["sosi_c2"]),
+        entered_red=parse_int(row.get("entered_red", "")),
+        entered_green=parse_int(row.get("entered_green", "")),
+        exited_green=parse_int(row.get("exited_green", "")),
+        first_green=parse_flag(row.get("first_green", "")),
+        lc_out_green=parse_int(row.get("lc_out_green", "")),
+        other_out_green=parse_int(row.get("other_out_green", "")),
+        stopline_out_red=parse_int(row.get("stopline_out_red", "")),
+        lc_out_red=parse_int(row.get("lc_out_red", "")),
+        other_out_red=parse_int(row.get("other_out_red", "")))
 
 
 def load_logged_greens(run_dir, network=None):

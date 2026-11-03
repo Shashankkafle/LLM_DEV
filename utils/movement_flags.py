@@ -28,7 +28,7 @@ import csv
 from dataclasses import dataclass
 
 from configurations import MOVEMENT_FLAGS_FILENAME
-from utils.oversaturation_indices import format_value
+from utils.oversaturation_indices import flow_values, format_value
 
 MIN_HYSTERESIS_GAP = 0.10
 # Absorbs float error so e.g. theta_in=0.3, theta_out=0.2 is accepted.
@@ -43,6 +43,8 @@ FLAG_COLUMNS = [
     "entry_count", "clean_count", "active", "raised_at",
     "held_over", "ratio_start", "sosi_c1", "sosi_c2", "sosi_c3",
     "branch", "q_start", "storage", "blocked_event_t",
+    "entered_red", "entered_green", "exited_green", "first_green",
+    "lc_out_green", "other_out_green", "stopline_out_red", "lc_out_red", "other_out_red",
 ]
 
 
@@ -172,7 +174,8 @@ def flag_row(result, target, link_indices, skipped, state, blocked_event_t=None)
             result.stop_halted_steps, result.no_exit_steps,
             result.target_halted_steps[target],
             state.branch, format_value(result.halted_count_start),
-            format_value(result.capacity), format_value(blocked_event_t)]
+            format_value(result.capacity), format_value(blocked_event_t),
+            *flow_values(result)]
 
 
 class MovementFlags:

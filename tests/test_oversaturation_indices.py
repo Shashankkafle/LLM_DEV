@@ -25,6 +25,7 @@ from utils.oversaturation_indices import (  # noqa: E402
     EMPTY_SNAPSHOT,
     LaneGreenTracker,
     build_lane_snapshot,
+    classify_exit,
     compute_sosi,
     compute_tosi,
     exited_ids,
@@ -119,14 +120,16 @@ def stalled_queue_snapshot():
         [(f"q{i}", 0.0, LANE_LENGTH - 2 - 7.5 * i) for i in range(5)], LANE_LENGTH)
 
 
-def drive(tracker, signals, lane_snapshots, target_snapshot, blocked=False):
+def drive(tracker, signals, lane_snapshots, target_snapshot, blocked=False,
+          vehicle_lanes=None):
     """Feed one signal per second. lane_snapshots[i] is the lane at time i;
-    returns the closed intervals and the green-start count."""
+    vehicle_lanes is where each vehicle is after it leaves (one map for the
+    whole run). Returns the closed intervals and the green-start count."""
     closed, starts = [], 0
     for tau, signal in enumerate(signals):
         observation = tracker.observe(tau, signal, lane_snapshots[tau],
                                       lane_snapshots[tau + 1], {TARGET: target_snapshot},
-                                      blocked)
+                                      blocked, vehicle_lanes)
         starts += observation.green_started
         if observation.closed is not None:
             closed.append(observation.closed)
@@ -206,6 +209,60 @@ def test_green_to_green_without_red_closes_at_restart():
     closed, starts = drive(new_tracker(), signals, snapshots, EMPTY_SNAPSHOT)
     assert starts == 2
     assert [(r.green_start, r.green_end, r.allred) for r in closed] == [(0, 10, 13), (13, 23, 26)]
+
+
+def lane_with(*vehicle_ids):
+    return build_lane_snapshot([(v, 0.0, 50.0) for v in vehicle_ids], LANE_LENGTH)
+
+
+def snapshots_from_changes(changes, length):
+    """changes: {time: snapshot}; each snapshot holds until the next change."""
+    snapshots, current = [], EMPTY_SNAPSHOT
+    for t in range(length):
+        current = changes.get(t, current)
+        snapshots.append(current)
+    return snapshots
+
+
+def test_flow_counts_split_red_and_green_windows():
+    # Green 1: 5..9, yellow to 11. Green 2: 14..18, yellow to 19.
+    signals = ["r"] * 5 + ["G"] * 4 + ["y"] * 2 + ["r"] * 3 + ["G"] * 4 + ["y"] + ["r"]
+    snapshots = snapshots_from_changes({
+        1: lane_with("a"),
+        3: lane_with("a", "b", OBSTACLE),
+        7: lane_with("b", "c"),
+        10: lane_with("c"),          # b leaves on yellow: still a green exit
+        12: lane_with("c", "d"),
+        13: lane_with("c"),          # d leaves on red to no lane
+        16: lane_with(),             # c changes lane during green 2
+        19: lane_with("e"),          # e enters on yellow: a green entry
+    }, len(signals) + 1)
+    vehicle_lanes = {"a": ":j_0_0", "b": TARGET, "c": "in_0"}
+    (first, second), _ = drive(new_tracker(), signals, snapshots, EMPTY_SNAPSHOT,
+                               vehicle_lanes=vehicle_lanes)
+    assert (first.entered_red, first.entered_green, first.exited_green) == (2, 1, 2)
+    assert (first.lc_out_green, first.other_out_green) == (0, 0)
+    assert (first.stopline_out_red, first.lc_out_red, first.other_out_red) == (0, 0, 0)
+    assert first.first_green is True
+    assert (second.entered_red, second.entered_green, second.exited_green) == (1, 1, 0)
+    assert (second.lc_out_green, second.other_out_green) == (1, 0)
+    assert (second.stopline_out_red, second.lc_out_red, second.other_out_red) == (0, 0, 1)
+    assert second.first_green is False
+    records = (first, second)
+    entered = sum(r.entered_red + r.entered_green for r in records)
+    exited = sum(r.exited_green + r.lc_out_green + r.other_out_green + r.stopline_out_red
+                 + r.lc_out_red + r.other_out_red for r in records)
+    assert entered - exited == len(second.on_lane_at_allred)
+
+
+def test_classify_exit_by_current_lane_only():
+    targets = [TARGET]
+    assert classify_exit(":j_0_0", LANE, targets) == "stopline"
+    assert classify_exit(TARGET, LANE, targets) == "stopline"   # skipped the internal lane
+    assert classify_exit("in_0", LANE, targets) == "lanechange"
+    assert classify_exit("out_2", LANE, targets) == "other"     # not a link target
+    assert classify_exit("", LANE, targets) == "other"          # teleporting
+    assert classify_exit(None, LANE, targets) == "other"        # arrived or removed
 
 
 def test_always_green_lane_never_closes():
