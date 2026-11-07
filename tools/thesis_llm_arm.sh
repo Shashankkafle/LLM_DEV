@@ -6,6 +6,7 @@
 #   bash tools/thesis_llm_arm.sh full               # the 6 runs, 2 in parallel
 #   bash tools/thesis_llm_arm.sh full 3             # ... 3 in parallel
 #   bash tools/thesis_llm_arm.sh full 2 --dry_run   # print the plan, run nothing
+#   VLLM_PORT=8001 bash tools/thesis_llm_arm.sh ... # if another server holds 8000
 #
 # Both modes first make sure the vLLM server is up and serving the paper 2
 # weights, and start it if nothing is listening. Runs are the paper 2 runner
@@ -26,7 +27,11 @@ SERVED_NAME=qwen2.5_14b
 GPU_MEMORY_PERCENT=90
 SERVE_ARGS=(--dtype float16 --max-model-len 4096 --max-num-seqs 64
             --gpu-memory-utilization "0.$GPU_MEMORY_PERCENT")
-export VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:8000/v1}"
+# One port drives both the server serve_vllm.sh starts and the URL the runs
+# call. The GPU box is shared, so another user's server may hold 8000:
+#   VLLM_PORT=8001 bash tools/thesis_llm_arm.sh smoke
+export VLLM_PORT="${VLLM_PORT:-8000}"
+export VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:$VLLM_PORT/v1}"
 PYTHON="${PYTHON:-.venv/bin/python}"
 
 # Overridable only so the launcher itself can be tested quickly; the arm is 7200.
