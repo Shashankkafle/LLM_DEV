@@ -6,7 +6,7 @@
 #   bash tools/thesis_llm_arm.sh full               # the 6 runs, 2 in parallel
 #   bash tools/thesis_llm_arm.sh full 3             # ... 3 in parallel
 #   bash tools/thesis_llm_arm.sh full 2 --dry_run   # print the plan, run nothing
-#   VLLM_PORT=8001 bash tools/thesis_llm_arm.sh ... # if another server holds 8000
+#   VLLM_PORT=8010 bash tools/thesis_llm_arm.sh ... # if something else holds 8000
 #
 # Both modes first make sure the vLLM server is up and serving the paper 2
 # weights, and start it if nothing is listening. Runs are the paper 2 runner
@@ -28,8 +28,8 @@ GPU_MEMORY_PERCENT=90
 SERVE_ARGS=(--dtype float16 --max-model-len 4096 --max-num-seqs 64
             --gpu-memory-utilization "0.$GPU_MEMORY_PERCENT")
 # One port drives both the server serve_vllm.sh starts and the URL the runs
-# call. The GPU box is shared, so another user's server may hold 8000:
-#   VLLM_PORT=8001 bash tools/thesis_llm_arm.sh smoke
+# call. The GPU box is shared, and JupyterHub holds 8000 and 8001 there:
+#   VLLM_PORT=8010 bash tools/thesis_llm_arm.sh smoke
 export VLLM_PORT="${VLLM_PORT:-8000}"
 export VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:$VLLM_PORT/v1}"
 PYTHON="${PYTHON:-.venv/bin/python}"
@@ -84,14 +84,32 @@ check_gpu_memory() {
     fi
 }
 
+port_in_use() {
+    (exec 3<> "/dev/tcp/127.0.0.1/$VLLM_PORT") 2> /dev/null
+}
+
+# Something that is not a vLLM server can hold the port (on the GPU box,
+# JupyterHub listens on 8000 and 8001); ours would then die at start-up.
+check_port_free() {
+    if port_in_use; then
+        die "port $VLLM_PORT is already in use by something that is not a vLLM server. Pick a free one, e.g. VLLM_PORT=8010 bash tools/thesis_llm_arm.sh ..."
+    fi
+}
+
 start_server() {
     check_gpu_memory
+    check_port_free
     log "no server at $VLLM_BASE_URL; starting it (log: $SERVER_LOG)"
     mkdir -p logs
-    setsid nohup bash serve_vllm.sh "$MODEL_PATH" "$SERVED_NAME" "${SERVE_ARGS[@]}" \
+    # setsid -w stays alive as long as the server does, so $! tracks it.
+    setsid -w nohup bash serve_vllm.sh "$MODEL_PATH" "$SERVED_NAME" "${SERVE_ARGS[@]}" \
         > "$SERVER_LOG" 2>&1 < /dev/null &
-    local waited=0
+    local server_pid=$! waited=0
     until [ -n "$(served_models)" ]; do
+        if ! kill -0 "$server_pid" 2> /dev/null; then
+            tail -5 "$SERVER_LOG"
+            die "the server exited during start-up; see $SERVER_LOG"
+        fi
         (( waited >= SERVER_WAIT_S )) && die "server not up after ${SERVER_WAIT_S}s; see $SERVER_LOG"
         sleep 10
         waited=$(( waited + 10 ))

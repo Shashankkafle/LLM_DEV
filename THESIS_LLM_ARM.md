@@ -52,6 +52,11 @@ python monitor_llm.py                      # server side: waiting, kv %, preempt
 
 Re-running `full` after a crash skips the runs that completed and redoes the rest.
 
+The box is shared. JupyterHub listens on ports 8000 and 8001, so give every launcher
+command the same free port, for example `VLLM_PORT=8010 bash tools/thesis_llm_arm.sh smoke`.
+The launcher refuses to start when the port is taken or when other processes hold
+too much GPU memory, and it says why.
+
 ## Outputs
 
 - Runs: `logs/thesis_llm_arm/llm_<scenario>_seed<N>_<timestamp>/`, with the
