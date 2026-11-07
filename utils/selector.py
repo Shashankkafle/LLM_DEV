@@ -8,12 +8,14 @@ IntervalResult (utils/oversaturation_indices.py), MovementFlags.active_branches(
 call evaluate once per step per intersection, after the observer and the
 diagnoser have updated. evaluate returns (new plan or None, rows); nothing is
 written here, the next change wires the rows into a CSV and the plan into
-CyclicController.set_plan.
+CyclicController.set_plan. Rows are never edited once returned, so they can be
+written append-only during the run.
 
-Lane roles: lane index 0 is the uncontrolled right turn and is ignored
-everywhere; 1 is through, 2 is left. A receiver phase is the one phase whose
+Lane roles: lane index 0 is the uncontrolled right turn and never gets a
+command; 1 is through, 2 is left. A receiver phase is the one phase whose
 lanes carry TOSI-branch flags; the other phases are donors. Decision points
-come every DECISION_WINDOW_GREENS greens of the receiver under the new plan.
+come every k_flag (K03) greens of the receiver, counted from the time the
+caller reports the plan applied (mark_plan_applied).
 """
 
 import math
@@ -21,16 +23,15 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from configurations import DEFAULT_INTERSECTION_CONFIG_NAME, INTERSECTION_CONFIGS
-from utils.movement_flags import SOSI_BRANCH, TOSI_BRANCH, FlagConfig
+from utils.movement_flags import SOSI_BRANCH, TOSI_BRANCH
 from utils.regime import LOADING, PROCESSING, RECOVERY
 
 _SETTINGS = INTERSECTION_CONFIGS[DEFAULT_INTERSECTION_CONFIG_NAME]["global_settings"]
 
 # --- constants (ledger ids in comments) ------------------------------------------
 
-# K03: receiver greens per decision window; same value as the flag exit count
-# k_flag, which is a FlagConfig default rather than a module constant.
-DECISION_WINDOW_GREENS = FlagConfig.k_flag
+# K03 (receiver greens per decision window) is the run's FlagConfig.k_flag,
+# passed to RuleTableSelector; it is not a module constant.
 # K07: start-up lost time per green, seconds.
 LOST_TIME_S = 3
 # K14: shortest green a donor may be cut to, from configurations.py.
@@ -64,6 +65,9 @@ DG_ZERO = "dg_zero"
 ROUTE_DEFERRED = "route_deferred_fbp"
 OUT_OF_SCOPE = "rule7_out_of_scope"
 SOSI_SYMPTOM = "sosi_symptom_no_action"
+RECEIVER_AT_MAX_GREEN = "receiver_at_max_green"
+RIGHT_LANE_NO_ACTION = "right_lane_no_action"
+REENTRY_AFTER_EXPIRY = "reentry_after_expiry"
 
 FLOOR_BOUND_MIN_GREEN = "min_green"
 FLOOR_BOUND_VC = "vc"
@@ -76,7 +80,7 @@ ROW_COLUMNS = [
     "window_first_t", "window_last_t", "held_first", "held_last",
     "dg_requested", "dg_given", "short_by", "donors",
     "donor_vc_before", "donor_vc_after", "donor_floor_bound", "receiver_bound",
-    "add_blocked_recovery", "reentry_after_expiry", "donor_over_capacity_greens",
+    "add_blocked_recovery", "expiry_t", "donor_over_capacity_greens",
     "plan_before", "plan_after",
 ]
 
@@ -139,14 +143,16 @@ class GreenRecord:
 
 @dataclass(frozen=True)
 class ExtentView:
-    """One live extent as the selector sees it. Pass only the extents the
-    ExtentTracker still holds (regime not yet N); an extent missing from the
-    list given to evaluate has ended."""
+    """One extent as the selector sees it. An extent has ended for the
+    selector as soon as it is vanished (its component is empty), even though
+    the ExtentTracker keeps stepping it until regime N; an extent missing from
+    the list given to evaluate has ended too."""
     extent_id: int
     members: frozenset
     intersections: frozenset
     regime: str
     cycle_start: int
+    vanished: bool = False
 
     @property
     def kind(self):
@@ -157,7 +163,8 @@ class ExtentView:
         """row: utils.extents.ExtentRow; lane_tls: Diagnoser.lane_tls."""
         return cls(extent_id=row.extent_id, members=frozenset(row.members),
                    intersections=frozenset(lane_tls[lane] for lane in row.members),
-                   regime=row.regime, cycle_start=row.cycle_start)
+                   regime=row.regime, cycle_start=row.cycle_start,
+                   vanished=row.vanished)
 
 
 @dataclass(frozen=True)
@@ -182,11 +189,14 @@ class Plan:
 
 @dataclass
 class IntersectionLanes:
-    """Controlled lanes of one signal grouped by phase; right turns dropped."""
+    """Controlled lanes of one signal grouped by phase; right turns are kept
+    apart in right_turn_lanes and take no part in any phase."""
     tls: str
     phase_lanes: dict
 
     def __post_init__(self):
+        self.right_turn_lanes = frozenset(lane for lanes in self.phase_lanes.values()
+                                          for lane in lanes if is_right_turn(lane))
         self.phase_lanes = {phase: tuple(lane for lane in lanes if not is_right_turn(lane))
                             for phase, lanes in self.phase_lanes.items()}
         self.lane_phase = {lane: phase for phase, lanes in self.phase_lanes.items()
@@ -280,6 +290,10 @@ class Allocation:
     short_by: int
 
     @property
+    def giving_phases(self):
+        return {donor.phase for donor in self.donors if donor.given > 0}
+
+    @property
     def receiver_bound(self):
         if self.short_by > 0:
             return RECEIVER_BOUND_DONOR_POOL
@@ -322,8 +336,9 @@ def is_over_capacity(record):
 class ActiveCommand:
     extent_id: int
     phase: str
-    t_issued: int
     flagged_lanes: frozenset
+    giving_phases: set                                # donors that gave seconds so far
+    effective_t: object = None                        # int once the caller applied the plan
     window: dict = field(default_factory=dict)        # receiver green_start -> held_sum
     over_capacity: set = field(default_factory=set)   # (donor phase, green_start)
 
@@ -331,7 +346,6 @@ class ActiveCommand:
 @dataclass
 class ExpiryWatch:
     phase: str
-    row: dict
     t_expired: int
     greens_seen: set = field(default_factory=set)
 
@@ -351,7 +365,7 @@ class IntersectionState:
 def blank_row(t, tls, extent_id, regime, phase, outcome, plan):
     row = {column: "" for column in ROW_COLUMNS}
     row.update(t=t, intersection=tls, extent_id=extent_id, regime=regime, phase=phase,
-               outcome=outcome, add_blocked_recovery=0, reentry_after_expiry=0,
+               outcome=outcome, add_blocked_recovery=0,
                plan_before=plan.text, plan_after=plan.text)
     return row
 
@@ -374,12 +388,22 @@ def fill_allocation(row, allocation):
 
 class RuleTableSelector:
     """One instance per run; keeps per-intersection command state and every
-    row it has produced (an expiry row is edited in place when its phase
-    re-flags, so write the rows at the end of the run)."""
+    row it has produced. flag_config is the run's FlagConfig: its k_flag is
+    the decision window (K03)."""
 
-    def __init__(self, intersections):
+    def __init__(self, intersections, flag_config):
+        self.decision_window_greens = flag_config.k_flag
         self.states = {lanes.tls: IntersectionState(lanes) for lanes in intersections}
         self.rows = []
+
+    def mark_plan_applied(self, tls, effective_t):
+        """Call when the executor starts running a plan this selector returned
+        for a new command or an add, with the cycle boundary it took effect at.
+        Receiver greens are counted toward the decision window only from then;
+        a restored base plan (expire) needs no call."""
+        command = self.states[tls].command
+        if command is not None:
+            command.effective_t = effective_t
 
     # --- per closed green -----------------------------------------------------
 
@@ -396,12 +420,12 @@ class RuleTableSelector:
             watch.greens_seen.add(record.green_start)
 
     def _track_command_green(self, command, phase, record):
-        if record.green_start < command.t_issued:
+        if command.effective_t is None or record.green_start < command.effective_t:
             return
         if phase == command.phase:
             held = record.held_over if record.lane in command.flagged_lanes else 0
             command.window[record.green_start] = command.window.get(record.green_start, 0) + held
-        elif is_over_capacity(record):
+        elif phase in command.giving_phases and is_over_capacity(record):
             command.over_capacity.add((phase, record.green_start))
 
     # --- per step ---------------------------------------------------------------
@@ -410,23 +434,31 @@ class RuleTableSelector:
         """extents: live ExtentViews (any intersection); branches: {lane: T|S}
         from lane_branches(). Returns (new Plan or None, rows emitted now)."""
         state = self.states[tls]
-        self._check_reentry(state, branches)
+        rows = self._check_reentry(t, state, plan, branches)
         if state.command is not None:
-            new_plan, rows = self._maybe_decision_point(t, state, plan, extents, branches)
+            new_plan, command_rows = self._maybe_decision_point(t, state, plan, extents,
+                                                                branches)
         else:
-            new_plan, rows = self._try_new_command(t, state, plan, extents, branches)
+            new_plan, command_rows = self._try_new_command(t, state, plan, extents, branches)
+        rows += command_rows
         self.rows.extend(rows)
         return new_plan, rows
 
-    def _check_reentry(self, state, branches):
+    def _check_reentry(self, t, state, plan, branches):
+        """A row pointing back at the expiry (expiry_t, phase) when the expired
+        phase re-flags TOSI within K03 of its greens."""
         watch = state.expiry_watch
         if watch is None:
-            return
-        if len(watch.greens_seen) > DECISION_WINDOW_GREENS:
+            return []
+        if len(watch.greens_seen) > self.decision_window_greens:
             state.expiry_watch = None
-        elif self._tosi_lanes(state, branches, state.lanes.phase_lanes[watch.phase]):
-            watch.row["reentry_after_expiry"] = 1
-            state.expiry_watch = None
+            return []
+        if not self._tosi_lanes(state, branches, state.lanes.phase_lanes[watch.phase]):
+            return []
+        state.expiry_watch = None
+        row = blank_row(t, state.lanes.tls, "", "", watch.phase, REENTRY_AFTER_EXPIRY, plan)
+        row["expiry_t"] = watch.t_expired
+        return [row]
 
     # --- new command (rules 1-4) ----------------------------------------------
 
@@ -441,6 +473,11 @@ class RuleTableSelector:
                 rows.append(blank_row(t, state.lanes.tls, extent.extent_id, extent.regime,
                                       "", ROUTE_DEFERRED, plan))
                 continue
+            if self._right_lanes_only(state, extent):
+                state.evaluated.add(key)
+                rows.append(blank_row(t, state.lanes.tls, extent.extent_id, extent.regime,
+                                      "", RIGHT_LANE_NO_ACTION, plan))
+                continue
             if extent.regime not in (LOADING, PROCESSING):
                 continue
             state.evaluated.add(key)
@@ -452,8 +489,12 @@ class RuleTableSelector:
         return None, rows
 
     def _touching(self, state, extents):
-        lanes = state.lanes.all_lanes
+        lanes = state.lanes.all_lanes | state.lanes.right_turn_lanes
         return [extent for extent in extents if extent.members & lanes]
+
+    def _right_lanes_only(self, state, extent):
+        """For a touching extent: none of its lanes here is a phase lane."""
+        return not extent.members & state.lanes.all_lanes
 
     def _new_command(self, t, state, plan, extent, branches):
         tls = state.lanes.tls
@@ -476,6 +517,9 @@ class RuleTableSelector:
             row["dg_requested"] = 0
             return None, row
         fill_allocation(row, allocation)
+        if allocation.dg_capped == 0:
+            row["outcome"] = RECEIVER_AT_MAX_GREEN
+            return None, row
         if allocation.given == 0:
             row["outcome"] = OUT_OF_SCOPE
             return None, row
@@ -484,7 +528,8 @@ class RuleTableSelector:
         if state.base_plan is None:
             state.base_plan = plan
         state.command = ActiveCommand(extent_id=extent.extent_id, phase=phase,
-                                      t_issued=t, flagged_lanes=flagged)
+                                      flagged_lanes=flagged,
+                                      giving_phases=allocation.giving_phases)
         return new_plan, row
 
     def _tosi_lanes(self, state, branches, lanes):
@@ -514,7 +559,7 @@ class RuleTableSelector:
 
     def _maybe_decision_point(self, t, state, plan, extents, branches):
         command = state.command
-        if len(command.window) < DECISION_WINDOW_GREENS:
+        if len(command.window) < self.decision_window_greens:
             return None, []
         new_plan, row = self._decision_point(t, state, plan, extents, branches)
         command.window = {}
@@ -529,7 +574,7 @@ class RuleTableSelector:
         row = blank_row(t, state.lanes.tls, command.extent_id, regime, command.phase, "", plan)
         self._fill_window(row, command)
         shrinking = row["held_last"] < row["held_first"] - SHRINK_MARGIN_VEH
-        if extent is None:
+        if extent is None or extent.vanished:
             return self._expire(t, state, row)
         if regime == RECOVERY:
             row.update(outcome=HOLD, add_blocked_recovery=int(not shrinking))
@@ -550,7 +595,7 @@ class RuleTableSelector:
         row.update(outcome=EXPIRE, plan_after=base_plan.text)
         state.command = None
         state.base_plan = None
-        state.expiry_watch = ExpiryWatch(phase=row["phase"], row=row, t_expired=t)
+        state.expiry_watch = ExpiryWatch(phase=row["phase"], t_expired=t)
         return base_plan, row
 
     def _add(self, t, state, plan, command, branches, row):
@@ -562,10 +607,14 @@ class RuleTableSelector:
             row.update(outcome=DG_ZERO, dg_requested=0)
             return None, row
         fill_allocation(row, allocation)
+        if allocation.dg_capped == 0:
+            row["outcome"] = RECEIVER_AT_MAX_GREEN
+            return None, row
         if allocation.given == 0:
             row["outcome"] = AT_FLOOR
             return None, row
         new_plan = apply_allocation(plan, command.phase, allocation)
         row.update(outcome=ADD, plan_after=new_plan.text)
-        command.t_issued = t
+        command.giving_phases |= allocation.giving_phases
+        command.effective_t = None
         return new_plan, row
