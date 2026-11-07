@@ -23,7 +23,9 @@ MODEL_PATH=~/LLMTSCS-custom_prompts/ft_models/merged/qwen2.5_14b
 SERVED_NAME=qwen2.5_14b
 # Paper 2 ran this model in torch.float16; pin it rather than let vLLM pick
 # from config.json. The rest are the runbook's explicit limits (section 4e).
-SERVE_ARGS=(--dtype float16 --max-model-len 4096 --max-num-seqs 64 --gpu-memory-utilization 0.90)
+GPU_MEMORY_PERCENT=90
+SERVE_ARGS=(--dtype float16 --max-model-len 4096 --max-num-seqs 64
+            --gpu-memory-utilization "0.$GPU_MEMORY_PERCENT")
 export VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:8000/v1}"
 PYTHON="${PYTHON:-.venv/bin/python}"
 
@@ -61,7 +63,24 @@ served_models() {
         2>/dev/null || true
 }
 
+# The GPU is shared with other users. vLLM claims GPU_MEMORY_FRACTION of the
+# card's TOTAL memory at start-up, so fail now with the reason rather than
+# after SERVER_WAIT_S of waiting for a server that cannot come up.
+check_gpu_memory() {
+    command -v nvidia-smi > /dev/null || return 0
+    local total used free needed
+    read -r total used <<< "$(nvidia-smi --query-gpu=memory.total,memory.used \
+        --format=csv,noheader,nounits | head -1 | tr -d ',')"
+    free=$(( total - used ))
+    needed=$(( total * GPU_MEMORY_PERCENT / 100 ))
+    if (( free < needed )); then
+        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+        die "GPU has ${free} MiB free, vLLM needs ${needed} MiB (${GPU_MEMORY_PERCENT}% of ${total}). Wait for the processes above to exit."
+    fi
+}
+
 start_server() {
+    check_gpu_memory
     log "no server at $VLLM_BASE_URL; starting it (log: $SERVER_LOG)"
     mkdir -p logs
     setsid nohup bash serve_vllm.sh "$MODEL_PATH" "$SERVED_NAME" "${SERVE_ARGS[@]}" \
