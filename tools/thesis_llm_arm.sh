@@ -32,6 +32,11 @@ SERVE_ARGS=(--dtype float16 --max-model-len 4096 --max-num-seqs 64
 #   VLLM_PORT=8010 bash tools/thesis_llm_arm.sh smoke
 export VLLM_PORT="${VLLM_PORT:-8000}"
 export VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:$VLLM_PORT/v1}"
+# The box's /usr/bin/nvcc is CUDA 11, too old for flashinfer to JIT-build its
+# sampler, so use vLLM's PyTorch sampler (greedy = argmax either way). vLLM's
+# other JIT builds call `ninja`, which lives only in the vLLM venv.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export PATH="$HOME/.venvs/vllm/bin:$PATH"
 PYTHON="${PYTHON:-.venv/bin/python}"
 
 # Overridable only so the launcher itself can be tested quickly; the arm is 7200.

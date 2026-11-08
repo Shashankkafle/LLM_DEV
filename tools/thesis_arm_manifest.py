@@ -32,6 +32,9 @@ NOTES = [
     "Weights are the fine-tuned merged Qwen2.5-14B, as in paper 2 -- not the stock "
     "Instruct model.",
     "Paper 2 manifests record git_dirty=true; their uncommitted edits were not saved.",
+    "Server started with VLLM_USE_FLASHINFER_SAMPLER=0 (PyTorch sampler): flashinfer "
+    "could not JIT-build its sampler with the box's CUDA 11 nvcc. Greedy decoding is "
+    "argmax under either sampler.",
     "The control loop stops early once SUMO expects no more vehicles, so "
     "last_sim_step can be below horizon_s.",
 ]
