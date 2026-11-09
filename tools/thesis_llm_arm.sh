@@ -6,6 +6,7 @@
 #   bash tools/thesis_llm_arm.sh full               # the 6 runs, 2 in parallel
 #   bash tools/thesis_llm_arm.sh full 3             # ... 3 in parallel
 #   bash tools/thesis_llm_arm.sh full 2 --dry_run   # print the plan, run nothing
+#   bash tools/thesis_llm_arm.sh repair             # fill in missing run_times / thesis_arm records
 #   VLLM_PORT=8010 bash tools/thesis_llm_arm.sh ... # if something else holds 8000
 #
 # Both modes first make sure the vLLM server is up and serving the paper 2
@@ -163,7 +164,9 @@ append_run_time() {
     (
         cd logs
         echo "== $rel"
-        find "$rel" -type f -printf '%T@ %TY-%Tm-%Td %TT %p\n' | sort -n | head -1 | cut -d' ' -f2-
+        # sed, not head: head exits early, sort then dies of SIGPIPE, and
+        # pipefail + set -e silently killed the whole run job.
+        find "$rel" -type f -printf '%T@ %TY-%Tm-%Td %TT %p\n' | sort -n | sed -n 1p | cut -d' ' -f2-
         find "$rel/run_manifest.json" -printf '%TY-%Tm-%Td %TT %p\n'
     ) >> "$RUN_TIMES"
 }
@@ -197,11 +200,48 @@ run_one() {
     # Record the wall-clock first: the end time is run_manifest.json's mtime,
     # which the identity block below would otherwise move.
     if [ "$record_time" = yes ]; then
-        append_run_time "$group/$(basename "$run_dir")"
+        append_run_time "$group/$(basename "$run_dir")" \
+            || log "WARN: could not append $test_name to $RUN_TIMES; run: bash tools/thesis_llm_arm.sh repair"
     fi
     "$PYTHON" tools/thesis_arm_manifest.py "$run_dir" \
-        --scenario "$scenario" --seed "$seed" --horizon "$steps" || true
+        --scenario "$scenario" --seed "$seed" --horizon "$steps" \
+        || log "WARN: thesis_arm block not written for $test_name; run: bash tools/thesis_llm_arm.sh repair"
     log "end $test_name exit=$exit_code run_dir=$run_dir"
+}
+
+has_thesis_block() {
+    "$PYTHON" -c 'import json,sys; sys.exit("thesis_arm" not in json.load(open(sys.argv[1])))' \
+        "$1/run_manifest.json"
+}
+
+# A complete entry is the "==" line followed by the run_manifest.json line.
+has_complete_run_time() {
+    local rel="$1"
+    grep -A2 -x "== $rel" "$RUN_TIMES" 2> /dev/null | grep -q "$rel/run_manifest.json"
+}
+
+# Fills in what a killed record step left out, for every completed run. Order
+# matters: the run_times end time is run_manifest.json's mtime, which writing
+# the thesis_arm block moves.
+repair() {
+    local entry scenario seed run_dir rel
+    for entry in "${RUN_ORDER[@]}"; do
+        read -r scenario seed <<< "$entry"
+        run_dir="$(newest_run_dir "$RUN_GROUP" "$(test_name_of "$scenario" "$seed")")"
+        is_completed "$run_dir" || continue
+        rel="$RUN_GROUP/$(basename "$run_dir")"
+        if ! has_thesis_block "$run_dir"; then
+            if ! has_complete_run_time "$rel"; then
+                append_run_time "$rel"
+                log "appended a complete $RUN_TIMES entry for $rel (delete any older partial one)"
+            fi
+            "$PYTHON" tools/thesis_arm_manifest.py "$run_dir" \
+                --scenario "$scenario" --seed "$seed" --horizon "$HORIZON"
+        elif ! has_complete_run_time "$rel"; then
+            log "WARN: $rel has no complete $RUN_TIMES entry, and its manifest mtime has moved; take the end time from thesis_arm.ended_at"
+        fi
+    done
+    log "repair done"
 }
 
 # --- modes ----------------------------------------------------------------
@@ -253,11 +293,12 @@ full() {
 
 case "${1:-}" in
     smoke) smoke ;;
+    repair) repair ;;
     full)
         parallel="${2:-2}"
         dry_run=no
         [ "${3:-}" = "--dry_run" ] && dry_run=yes
         full "$parallel" "$dry_run"
         ;;
-    *) echo "usage: bash tools/thesis_llm_arm.sh smoke | full [N_PARALLEL] [--dry_run]"; exit 2 ;;
+    *) echo "usage: bash tools/thesis_llm_arm.sh smoke | full [N_PARALLEL] [--dry_run] | repair"; exit 2 ;;
 esac
