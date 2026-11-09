@@ -21,7 +21,7 @@ from configurations import (  # noqa: E402
     COMMANDS_FILENAME, INTERSECTION_CONFIGS, PLAN_CHANGES_FILENAME, SELECTOR_DECISIONS_FILENAME,
 )
 from ruletable_controller import (  # noqa: E402
-    PendingPlan, RuleTableController, SelectorDecisionsLog, starts_new_cycle,
+    PendingPlan, RuleTableController, SelectorDecisionsLog,
 )
 from runner_baselines import default_cyclic_plan  # noqa: E402
 from utils.executor_log import ExecutorLog  # noqa: E402
@@ -35,7 +35,7 @@ TLS = "tls"
 def fake_ctx(records_dir, t=0):
     return SimpleNamespace(
         records_dir=records_dir,
-        handlers={TLS: None},
+        handlers={TLS: SimpleNamespace(green_source=None)},
         env=SimpleNamespace(get_current_step=lambda: t),
         diagnoser=SimpleNamespace(cycle_s=140, cycle_listener=None, lane_tls={}),
         oversaturation=SimpleNamespace(trackers=[], listener=None),
@@ -57,35 +57,53 @@ def issued_plan():
     return plan, row
 
 
-def test_starts_new_cycle_only_after_the_last_phase():
-    plan = default_cyclic_plan(CONF)
-    assert [starts_new_cycle(plan, phase) for phase in plan.order] == [False, False, False, True]
-    assert starts_new_cycle(plan, "not_a_phase")
-
-
-def test_pending_plan_waits_for_the_cycle_boundary():
+def test_controller_becomes_every_handlers_green_source():
     with tempfile.TemporaryDirectory() as tmp:
-        ctx = fake_ctx(Path(tmp), t=275)
+        ctx = fake_ctx(Path(tmp))
         controller = RuleTableController(CONF, ctx, FlagConfig())
+        assert ctx.handlers[TLS].green_source == controller.green_for
+        ctx.executor_log.close()
+        controller.close()
+
+
+def test_pending_plan_starts_with_the_next_first_green():
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = fake_ctx(Path(tmp), t=140)
+        controller = RuleTableController(CONF, ctx, FlagConfig())
+        controller.last_cycle_close_t = 139
         applied = []
         controller.selector.mark_plan_applied = lambda tls, t: applied.append((tls, t))
         plan, row = issued_plan()
         controller.pending[TLS] = PendingPlan(plan, t_issued=139, row=row)
 
-        controller.choose(TLS, SimpleNamespace(current_phase="ETWT"))
+        assert controller.green_for(TLS, "NTST") == 30
         assert TLS in controller.pending and applied == []
 
-        decision, _state = controller.choose(TLS, SimpleNamespace(current_phase="NLSL"))
-        assert decision == ("ETWT", 40)
+        assert controller.green_for(TLS, "ETWT") == 40
         assert controller.cyclic.plans[TLS] == plan and TLS not in controller.pending
-        assert applied == [(TLS, 275)]
+        assert applied == [(TLS, 140)]
         ctx.executor_log.close()
         controller.close()
         changes = read_rows(Path(tmp) / PLAN_CHANGES_FILENAME)
         commands = read_rows(Path(tmp) / COMMANDS_FILENAME)
-        assert [change["t"] for change in changes] == ["275"]
+        assert [change["t"] for change in changes] == ["140"]
         assert [(c["t_issued"], c["effective_at"], c["primitive"]) for c in commands] == [
-            ("139", "275", NEW_COMMAND)]
+            ("139", "140", NEW_COMMAND)]
+
+
+def test_cycle_start_without_a_cycle_close_in_the_all_red_fails():
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = fake_ctx(Path(tmp), t=140)
+        controller = RuleTableController(CONF, ctx, FlagConfig())
+        controller.last_cycle_close_t = 135
+        try:
+            controller.green_for(TLS, "ETWT")
+            raised = False
+        except RuntimeError:
+            raised = True
+        ctx.executor_log.close()
+        controller.close()
+        assert raised
 
 
 def test_partial_last_cycle_is_not_evaluated():

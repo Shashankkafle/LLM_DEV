@@ -8,16 +8,23 @@ are. The timing, per intersection:
   Diagnoser (and so the flags) has seen it;
 - when the Diagnoser closes a cycle (its flags, extents and regime updated),
   selector.evaluate runs for every intersection;
-- a returned plan waits until that intersection next starts a cycle (the
-  decision that hands the green back to the first phase of the order) and is
-  installed there with CyclicController.set_plan, so no cycle ever mixes two
-  plans. That decision's time is the plan's effective time, given to the
-  selector with mark_plan_applied.
+- a returned plan waits until that intersection next starts a cycle, i.e.
+  the first phase of the order turns green, and is installed there with
+  CyclicController.set_plan, so no cycle ever mixes two plans. That green's
+  start is the plan's effective time, given to the selector with
+  mark_plan_applied.
+
+Green lengths are read when each green starts (PhaseHandler.green_source),
+not at the decision ending the previous green. That matters: the cycle's
+last green only closes 1 s into the all-red that follows it, so the
+Diagnoser closes the cycle (t = 139 mod 140) after that decision (t = 135)
+but before the next cycle's first green (t = 140). A plan returned at the
+cycle close therefore starts with the very next cycle.
 
 The base plan's cycle must equal the Diagnoser's cycle and the selector only
-moves seconds between greens, so every intersection's cycle boundary falls a
-fixed few seconds before each Diagnoser cycle close, and greens fall into the
-same cycles for both.
+moves seconds between greens, so the two cycles stay aligned. Every cycle
+start checks that the Diagnoser closed a cycle during the all-red just
+before it.
 """
 
 import csv
@@ -49,14 +56,6 @@ def phase_lanes_of(tls, trackers, conf):
 def selector_plan(cyclic_plan):
     return Plan(order=tuple(cyclic_plan.order), splits=dict(cyclic_plan.splits),
                 offset=cyclic_plan.offset)
-
-
-def starts_new_cycle(plan, current_phase):
-    """True when CyclicController.choose will next serve the first phase of
-    the order, i.e. this decision opens a new cycle."""
-    if current_phase not in plan.order:
-        return True
-    return plan.order.index(current_phase) == len(plan.order) - 1
 
 
 # --- feeding closed greens to the selector ------------------------------------------
@@ -136,9 +135,13 @@ class RuleTableController:
                          for tls in ctx.handlers]
         self.selector = RuleTableSelector(intersections, flag_config)
         self.pending = {}
+        self.red_duration = conf["global_settings"]["red_duration"]
+        self.last_cycle_close_t = None
         self.decisions_log = SelectorDecisionsLog(ctx.records_dir)
         ctx.oversaturation.listener = SelectorFeed(ctx.diagnoser, self.selector)
         ctx.diagnoser.cycle_listener = self.on_cycle_closed
+        for handler in ctx.handlers.values():
+            handler.green_source = self.green_for
 
     def current_plan(self, tls):
         return self.cyclic.plans.get(tls, self.cyclic.default_plan)
@@ -146,10 +149,28 @@ class RuleTableController:
     # --- decisions ----------------------------------------------------------------
 
     def choose(self, intersection_id, handler):
-        if (intersection_id in self.pending
-                and starts_new_cycle(self.current_plan(intersection_id), handler.current_phase)):
-            self._apply_pending(intersection_id)
+        """The green in the returned decision is the plan's at this moment;
+        the length actually run is read again at the green's start
+        (green_for), which differs only when a new plan starts in between."""
         return self.cyclic.choose(intersection_id, handler)
+
+    def green_for(self, intersection_id, phase):
+        """PhaseHandler.green_source: called when a green starts."""
+        if phase == self.current_plan(intersection_id).order[0]:
+            t = self.ctx.env.get_current_step()
+            self._check_cycle_closed_in_all_red(t)
+            if intersection_id in self.pending:
+                self._apply_pending(intersection_id)
+        return self.cyclic.green_for(intersection_id, phase)
+
+    def _check_cycle_closed_in_all_red(self, t):
+        """A cycle starting at t must have been evaluated during the all-red
+        just before it; otherwise plans would again start a cycle late."""
+        last = self.last_cycle_close_t
+        if last is None or not t - self.red_duration <= last < t:
+            raise RuntimeError(
+                f"cycle starting at t={t}: last Diagnoser cycle close was t={last}, "
+                f"not within the {self.red_duration} s all-red before it")
 
     def _apply_pending(self, tls):
         pending = self.pending.pop(tls)
@@ -177,6 +198,7 @@ class RuleTableController:
         # that is no cycle boundary, so nothing is evaluated on it.
         if t + 1 < cycle_start + self.ctx.diagnoser.cycle_s:
             return
+        self.last_cycle_close_t = t
         extents = [ExtentView.from_extent_row(row, self.ctx.diagnoser.lane_tls)
                    for row in extent_rows]
         branches = lane_branches(self.ctx.movement_flags.active_branches())
