@@ -391,3 +391,52 @@ if __name__ == "__main__":
                 print(f"FAIL {name}")
                 traceback.print_exc()
     sys.exit(1 if failed else 0)
+
+
+def run_window_with_second_extent(second_extent_cycles):
+    """T1 command on extent 1, then a 3-green receiver window; a second extent
+    (id 2, on E_1) is live during the given cycle starts and gone before the
+    decision point. Returns (plans returned in between, decision rows)."""
+    sel = selector()
+    plan_1, _ = issue_t1_command(sel)
+    plans_between = []
+    for cycle_start in second_extent_cycles:
+        live = [extent(regime="P", cycle_start=cycle_start),
+                extent(extent_id=2, members=("E_1",), regime="L", cycle_start=cycle_start)]
+        for t in (cycle_start, cycle_start + 1):
+            new_plan, rows = sel.evaluate(t, TLS, plan_1, live, {"N_1": "T", "E_1": "T"})
+            assert rows == []
+            plans_between.append(new_plan)
+    feed_receiver_window(sel, [20, 18, 16])
+    new_plan, rows = sel.evaluate(450, TLS, plan_1, [extent(regime="P")], {"N_1": "T"})
+    return plans_between, new_plan, rows
+
+
+def test_ignored_extent_logged_at_next_decision_point():
+    plans_between, new_plan, rows = run_window_with_second_extent([200, 300])
+    assert plans_between == [None] * 4
+    assert new_plan is None and rows[0]["outcome"] == HOLD
+    assert rows[0]["ignored_extents"] == "2"
+    assert rows[0]["ignored_extent_cycles"] == 2
+
+
+def test_no_ignored_extent_when_none_appears():
+    plans_between, new_plan, rows = run_window_with_second_extent([])
+    assert plans_between == []
+    assert new_plan is None and rows[0]["outcome"] == HOLD
+    assert rows[0]["ignored_extents"] == ""
+    assert rows[0]["ignored_extent_cycles"] == 0
+
+
+def test_ignored_extents_reset_after_row():
+    sel = selector()
+    plan_1, rows = issue_t1_command(sel)
+    assert rows[0]["ignored_extents"] == "" and rows[0]["ignored_extent_cycles"] == 0
+    second = extent(extent_id=2, members=("E_1",), cycle_start=200)
+    sel.evaluate(200, TLS, plan_1, [extent(regime="P"), second], {"E_1": "T"})
+    feed_receiver_window(sel, [20, 18, 16])
+    _, first = sel.evaluate(450, TLS, plan_1, [extent(regime="P")], {"N_1": "T"})
+    feed_receiver_window(sel, [20, 18, 16], first_start=500)
+    _, later = sel.evaluate(750, TLS, plan_1, [extent(regime="P")], {"N_1": "T"})
+    assert first[0]["ignored_extents"] == "2"
+    assert later[0]["ignored_extents"] == "" and later[0]["ignored_extent_cycles"] == 0

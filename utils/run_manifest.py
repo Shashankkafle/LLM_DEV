@@ -190,6 +190,7 @@ def add_flag_settings(manifest, flag_config, cycle_s):
     they are never null there (the v3 batch logged null and so hid that it
     ran on stale defaults). A copy: args may be the live argparse dict."""
     manifest["args"] = {**manifest["args"], **asdict(flag_config), "cycle_s": cycle_s}
+    manifest["flag_config"] = asdict(flag_config)
 
 
 def record_run_checks(run_dir, verification, scenario_gate):

@@ -81,7 +81,7 @@ ROW_COLUMNS = [
     "dg_requested", "dg_given", "short_by", "donors",
     "donor_vc_before", "donor_vc_after", "donor_floor_bound", "receiver_bound",
     "add_blocked_recovery", "expiry_t", "donor_over_capacity_greens",
-    "plan_before", "plan_after",
+    "plan_before", "plan_after", "ignored_extents", "ignored_extent_cycles",
 ]
 
 
@@ -358,6 +358,8 @@ class IntersectionState:
     expiry_watch: object = None
     history: dict = field(default_factory=dict)       # lane -> deque of GreenRecord
     evaluated: set = field(default_factory=set)       # (extent_id, cycle_start)
+    ignored_extent_ids: set = field(default_factory=set)      # since the previous row
+    ignored_cycle_starts: set = field(default_factory=set)    # since the previous row
 
 
 # --- row formatting ---------------------------------------------------------------
@@ -366,7 +368,8 @@ def blank_row(t, tls, extent_id, regime, phase, outcome, plan):
     row = {column: "" for column in ROW_COLUMNS}
     row.update(t=t, intersection=tls, extent_id=extent_id, regime=regime, phase=phase,
                outcome=outcome, add_blocked_recovery=0,
-               plan_before=plan.text, plan_after=plan.text)
+               plan_before=plan.text, plan_after=plan.text,
+               ignored_extents="", ignored_extent_cycles=0)
     return row
 
 
@@ -434,6 +437,7 @@ class RuleTableSelector:
         """extents: live ExtentViews (any intersection); branches: {lane: T|S}
         from lane_branches(). Returns (new Plan or None, rows emitted now)."""
         state = self.states[tls]
+        self._note_ignored_extents(state, extents)
         rows = self._check_reentry(t, state, plan, branches)
         if state.command is not None:
             new_plan, command_rows = self._maybe_decision_point(t, state, plan, extents,
@@ -441,8 +445,30 @@ class RuleTableSelector:
         else:
             new_plan, command_rows = self._try_new_command(t, state, plan, extents, branches)
         rows += command_rows
+        if rows:
+            self._stamp_ignored_extents(state, rows[0])
         self.rows.extend(rows)
         return new_plan, rows
+
+    def _note_ignored_extents(self, state, extents):
+        """While a command is active, other live extents flagged here get no
+        action; remember them for the next row at this intersection."""
+        command = state.command
+        if command is None:
+            return
+        for extent in self._touching(state, extents):
+            if extent.extent_id == command.extent_id or extent.vanished:
+                continue
+            if self._right_lanes_only(state, extent):
+                continue
+            state.ignored_extent_ids.add(extent.extent_id)
+            state.ignored_cycle_starts.add(extent.cycle_start)
+
+    def _stamp_ignored_extents(self, state, row):
+        row["ignored_extents"] = ";".join(str(i) for i in sorted(state.ignored_extent_ids))
+        row["ignored_extent_cycles"] = len(state.ignored_cycle_starts)
+        state.ignored_extent_ids = set()
+        state.ignored_cycle_starts = set()
 
     def _check_reentry(self, t, state, plan, branches):
         """A row pointing back at the expiry (expiry_t, phase) when the expired

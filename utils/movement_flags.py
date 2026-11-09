@@ -48,7 +48,7 @@ FLAG_COLUMNS = [
 ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class FlagConfig:
     theta_in: float = 0.30
     theta_out: float = 0.20
