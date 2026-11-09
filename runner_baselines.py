@@ -180,6 +180,12 @@ class CyclicController:
         }
         return (next_phase, green), controller_state
 
+    def green_for(self, intersection_id, phase):
+        """The installed plan's split for phase; usable as a
+        PhaseHandler.green_source."""
+        plan = self.plans.setdefault(intersection_id, self.default_plan)
+        return plan.splits[phase]
+
 
 def build_controller(name, conf, intersection_ids):
     if name == "fixedtime":
