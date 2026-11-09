@@ -12,6 +12,8 @@ launcher can track it.
 param(
     [Parameter(Mandatory = $true)][string]$RunGroup,
     [Parameter(Mandatory = $true)][int[]]$Seeds,
+    [ValidateSet("fixedtime", "maxpressure", "cyclic", "ruletable")]
+    [string[]]$Controllers = @("fixedtime", "maxpressure"),
     [int]$MaxParallel = 8,
     [switch]$DryRun
 )
@@ -38,10 +40,8 @@ function New-ScenarioRows {
 }
 
 function New-RunList {
-    $controllers = @(
-        @{ Name = "fixedtime"; Prefix = "ft" }
-        @{ Name = "maxpressure"; Prefix = "mp" }
-    )
+    $prefixes = @{ fixedtime = "ft"; maxpressure = "mp"; cyclic = "cy"; ruletable = "rt" }
+    $controllers = @($Controllers | ForEach-Object { @{ Name = $_; Prefix = $prefixes[$_] } })
     foreach ($row in New-ScenarioRows) {
         foreach ($seed in $Seeds) {
             foreach ($controller in $controllers) {

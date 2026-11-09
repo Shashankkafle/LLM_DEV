@@ -315,6 +315,8 @@ LANE_ENTRIES_FILENAME = "lane_entries.csv"
 # only for controllers without an executor.
 COMMANDS_FILENAME = "commands.csv"
 PLAN_CHANGES_FILENAME = "plan_changes.csv"
+# Every row the rule-table selector produced (ruletable_controller.py).
+SELECTOR_DECISIONS_FILENAME = "selector_decisions.csv"
 # Offline evaluation of one run (tools/eval_metrics.py).
 EVAL_METRICS_FILENAME = "eval_metrics.json"
 DECISIONS_FILENAME = "decisions.jsonl"

@@ -13,6 +13,7 @@ Usage:
         --simulation_config dataset/llm_light/Hangzhou/4_4/anon_4_4_hangzhou_real_5816.sumocfg \
         --intersection_config three_lane --simulation_steps 3600 \
         --test_name maxpressure_hz4x4
+    python runner_baselines.py --controller ruletable --movement_flags   # see ruletable_controller.py
 """
 import argparse
 from dataclasses import dataclass
@@ -192,8 +193,11 @@ def build_controller(name, conf, intersection_ids):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--controller", choices=["fixedtime", "maxpressure", "cyclic"],
-                        required=True)
+    parser.add_argument("--controller",
+                        choices=["fixedtime", "maxpressure", "cyclic", "ruletable"],
+                        required=True,
+                        help="ruletable: the cyclic plan with the rule-table selector "
+                             "changing its splits; needs --movement_flags.")
     parser.add_argument("--test_name", type=str, default=None,
                         help="Output folder name prefix. Defaults to the controller name.")
     parser.add_argument("--run_group", type=str, default=None,
@@ -222,7 +226,20 @@ def parse_args():
                              "halted and exit counts for every signalized lane "
                              "(the raw inputs behind TOSI/SOSI).")
     add_movement_flag_args(parser)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.controller == "ruletable" and not args.movement_flags:
+        parser.error("--controller ruletable needs --movement_flags (the selector "
+                     "runs on the live diagnoser)")
+    return args
+
+
+def build_run_controller(name, conf, ctx, flag_config):
+    if name == "ruletable":
+        # Imported here: ruletable_controller builds on CyclicController from
+        # this module, so a top-level import would be circular.
+        from ruletable_controller import RuleTableController
+        return RuleTableController(conf, ctx, flag_config)
+    return build_controller(name, conf, list(ctx.handlers))
 
 
 def main(args):
@@ -241,14 +258,15 @@ def main(args):
     }
     manifest = build_manifest(args.controller, args, args.intersection_config, conf)
     manifest["test_name"] = test_name
+    flag_config = movement_flag_config_from_args(args)
     ctx = setup_run(conf, test_name, args.simulation_config, run_meta,
                     use_gui=args.use_gui, seed=args.seed,
                     blockage_manager=blockage_manager, manifest=manifest,
                     run_group=args.run_group, logs_dir=args.logs_dir,
                     oversat_shadow=getattr(args, "oversat_shadow", False),
-                    movement_flag_config=movement_flag_config_from_args(args),
+                    movement_flag_config=flag_config,
                     regime_cycle_s=regime_cycle_s_from_args(args))
-    controller = build_controller(args.controller, conf, list(ctx.handlers))
+    controller = build_run_controller(args.controller, conf, ctx, flag_config)
 
     print(f"Controller    : {args.controller}")
     print(f"SUMO config   : {args.simulation_config}")
@@ -269,7 +287,11 @@ def main(args):
         )
         return decision
 
-    run_control_loop(ctx, args.simulation_steps, decide)
+    try:
+        run_control_loop(ctx, args.simulation_steps, decide)
+    finally:
+        if hasattr(controller, "close"):
+            controller.close()
 
 
 if __name__ == "__main__":
