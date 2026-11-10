@@ -5,6 +5,8 @@ after the run ends.
 
     powershell -ExecutionPolicy Bypass -File tools\run_shadow.ps1 -RunGroup shadow_tuning_v3 -Seeds 1,2 [-MaxParallel 8] [-DryRun]
 
+-Rows limits the batch to the named scenario rows; -Steps overrides every selected row's steps.
+
 Each window tees its output to logs\<RunGroup>\<test_name>.console.log (test_name ends
 in _s<seed>) and, on exit, writes <test_name>.done (exit code + seconds) so this
 launcher can track it.
@@ -14,6 +16,8 @@ param(
     [Parameter(Mandatory = $true)][int[]]$Seeds,
     [ValidateSet("fixedtime", "maxpressure", "cyclic", "ruletable")]
     [string[]]$Controllers = @("fixedtime", "maxpressure"),
+    [string[]]$Rows = @(),
+    [int]$Steps = 0,
     [int]$MaxParallel = 8,
     [switch]$DryRun
 )
@@ -39,10 +43,22 @@ function New-ScenarioRows {
     )
 }
 
+function Select-ScenarioRows {
+    $all = @(New-ScenarioRows)
+    if ($Rows.Count -eq 0) { $selected = $all }
+    else {
+        $unknown = @($Rows | Where-Object { $_ -notin $all.Name })
+        if ($unknown.Count -gt 0) { throw "Unknown row(s): $($unknown -join ', '). Known: $($all.Name -join ', ')" }
+        $selected = @($all | Where-Object { $_.Name -in $Rows })
+    }
+    if ($Steps -gt 0) { foreach ($row in $selected) { $row.Steps = $Steps } }
+    $selected
+}
+
 function New-RunList {
     $prefixes = @{ fixedtime = "ft"; maxpressure = "mp"; cyclic = "cy"; ruletable = "rt" }
     $controllers = @($Controllers | ForEach-Object { @{ Name = $_; Prefix = $prefixes[$_] } })
-    foreach ($row in New-ScenarioRows) {
+    foreach ($row in Select-ScenarioRows) {
         foreach ($seed in $Seeds) {
             foreach ($controller in $controllers) {
                 $testName = "$($controller.Prefix)_$($row.Name)_s$seed"
