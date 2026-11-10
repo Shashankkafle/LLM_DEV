@@ -23,7 +23,7 @@ from configurations import (  # noqa: E402
 from ruletable_controller import (  # noqa: E402
     PendingPlan, RuleTableController, SelectorDecisionsLog,
 )
-from runner_baselines import default_cyclic_plan  # noqa: E402
+from runner_baselines import default_cyclic_plan, run_config  # noqa: E402
 from utils.executor_log import ExecutorLog  # noqa: E402
 from utils.movement_flags import FlagConfig  # noqa: E402
 from utils.selector import NEW_COMMAND, ROW_COLUMNS  # noqa: E402
@@ -62,6 +62,19 @@ def test_controller_becomes_every_handlers_green_source():
         ctx = fake_ctx(Path(tmp))
         controller = RuleTableController(CONF, ctx, FlagConfig())
         assert ctx.handlers[TLS].green_source == controller.green_for
+        ctx.executor_log.close()
+        controller.close()
+
+
+def test_max_green_override_reaches_selector_without_touching_shared_config():
+    args = SimpleNamespace(intersection_config="three_lane", max_green=75)
+    conf = run_config(args)
+    assert conf["global_settings"]["max_green"] == 75
+    assert CONF["global_settings"]["max_green"] == 60
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = fake_ctx(Path(tmp))
+        controller = RuleTableController(conf, ctx, FlagConfig())
+        assert controller.selector.max_green == 75
         ctx.executor_log.close()
         controller.close()
 

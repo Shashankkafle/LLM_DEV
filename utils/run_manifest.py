@@ -193,6 +193,13 @@ def add_flag_settings(manifest, flag_config, cycle_s):
     manifest["flag_config"] = asdict(flag_config)
 
 
+def add_max_green_setting(manifest, max_green):
+    """Write the max_green the run actually uses into args. --max_green
+    defaults to None (use the intersection config's value), which would tell
+    a reader nothing. A copy: args may be the live argparse dict."""
+    manifest["args"] = {**manifest["args"], "max_green": max_green}
+
+
 def record_run_checks(run_dir, verification, scenario_gate):
     """Store the end-of-run checks: verification {passed, first_diff},
     scenario_gate {rule, passed, first_t}. No-op if the manifest was never

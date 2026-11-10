@@ -133,7 +133,8 @@ class RuleTableController:
         trackers = ctx.oversaturation.trackers
         intersections = [IntersectionLanes(tls, phase_lanes_of(tls, trackers, conf))
                          for tls in ctx.handlers]
-        self.selector = RuleTableSelector(intersections, flag_config)
+        self.selector = RuleTableSelector(intersections, flag_config,
+                                          max_green=conf["global_settings"]["max_green"])
         self.pending = {}
         self.red_duration = conf["global_settings"]["red_duration"]
         self.last_cycle_close_t = None

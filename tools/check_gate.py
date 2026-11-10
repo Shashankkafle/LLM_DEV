@@ -48,7 +48,8 @@ class Timing:
         self.base_splits = dict(base_plan.splits)
         self.transition_s = settings["yellow_duration"] + settings["red_duration"]
         self.min_green = settings["min_green"]
-        self.max_green = settings["max_green"]
+        # Manifests written before --max_green existed have no max_green in args.
+        self.max_green = manifest["args"].get("max_green", settings["max_green"])
         self.cycle_s = int(manifest["args"]["cycle_s"])
 
 

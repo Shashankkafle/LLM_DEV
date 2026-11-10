@@ -379,6 +379,32 @@ def test_no_action_rows_logged_once_per_extent_cycle():
     assert len(first) == 1 and second == [] and len(third) == 1
 
 
+def test_run_max_green_caps_receiver():
+    # dg = floor(0.4 * 40) = 16; the default 60 s cap would allow all of it.
+    default_plan, _ = issue_t1_command(selector(), current_plan=plan(NTST=40), tosi=0.4)
+    assert default_plan.splits["NTST"] == 56
+    sel = RuleTableSelector([IntersectionLanes(TLS, PHASE_LANES)], FlagConfig(), max_green=50)
+    new_plan, rows = issue_t1_command(sel, current_plan=plan(NTST=40), tosi=0.4)
+    assert new_plan.splits["NTST"] == 50
+    assert rows[0]["dg_requested"] == 16 and rows[0]["dg_given"] == 10
+    assert rows[0]["receiver_bound"] == RECEIVER_BOUND_MAX_GREEN
+
+
+def test_run_max_green_lets_receiver_grow_past_default():
+    # dg = floor(0.5 * 60) = 30. At the default 60 s cap the receiver is
+    # already full; at 90 s NLSL (spare 25) and ELWL (spare 17) cover all 30.
+    start = plan(NTST=60)
+    default_plan, default_rows = issue_t1_command(selector(), current_plan=start, tosi=0.5)
+    assert default_plan is None
+    assert default_rows[0]["outcome"] == RECEIVER_AT_MAX_GREEN
+    sel = RuleTableSelector([IntersectionLanes(TLS, PHASE_LANES)], FlagConfig(), max_green=90)
+    new_plan, rows = issue_t1_command(sel, current_plan=start, tosi=0.5)
+    assert new_plan.splits == {"ETWT": 30, "NTST": 90, "ELWL": 25, "NLSL": 5}
+    assert rows[0]["outcome"] == NEW_COMMAND
+    assert (rows[0]["dg_requested"], rows[0]["dg_given"], rows[0]["short_by"]) == (30, 30, 0)
+    assert rows[0]["receiver_bound"] == RECEIVER_BOUND_NONE
+
+
 if __name__ == "__main__":
     failed = 0
     for name, test in sorted(globals().items()):

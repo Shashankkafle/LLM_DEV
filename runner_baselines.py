@@ -16,6 +16,7 @@ Usage:
     python runner_baselines.py --controller ruletable --movement_flags   # see ruletable_controller.py
 """
 import argparse
+import copy
 from dataclasses import dataclass
 
 import traci
@@ -24,7 +25,7 @@ from runner_common import (
     setup_run, run_control_loop, build_blockage_manager, _phase_and_green,
     add_movement_flag_args, movement_flag_config_from_args, regime_cycle_s_from_args,
 )
-from utils.run_manifest import build_manifest
+from utils.run_manifest import add_max_green_setting, build_manifest
 from configurations import (
     INTERSECTION_CONFIGS,
     DEFAULT_INTERSECTION_CONFIG_NAME,
@@ -227,6 +228,9 @@ def parse_args():
     )
     parser.add_argument("--logs_dir", type=str, default=None,
                         help="Write the run directory under this root instead of logs/.")
+    parser.add_argument("--max_green", type=int, default=None,
+                        help="Longest green, seconds, for the phase handlers and the "
+                             "rule-table selector. Default: the intersection config's.")
     parser.add_argument("--oversat_shadow", action="store_true",
                         help="Also write oversaturation_shadow.csv: per-step "
                              "halted and exit counts for every signalized lane "
@@ -236,6 +240,13 @@ def parse_args():
     if args.controller == "ruletable" and not args.movement_flags:
         parser.error("--controller ruletable needs --movement_flags (the selector "
                      "runs on the live diagnoser)")
+    default_green = INTERSECTION_CONFIGS[args.intersection_config]["global_settings"][
+        "default_green_duration"]
+    if args.max_green is not None and args.max_green < default_green:
+        # Below the base plan's split, the handlers would silently shorten
+        # every green and the run would no longer be the planned cycle.
+        parser.error(f"--max_green {args.max_green} is below the base plan's "
+                     f"{default_green} s green")
     return args
 
 
@@ -248,8 +259,19 @@ def build_run_controller(name, conf, ctx, flag_config):
     return build_controller(name, conf, list(ctx.handlers))
 
 
+def run_config(args):
+    """The intersection config with this run's overrides. A deep copy, so the
+    shared INTERSECTION_CONFIGS entry (read by everything else in the process,
+    including the selector's defaults and tests) is never changed."""
+    conf = copy.deepcopy(INTERSECTION_CONFIGS[args.intersection_config])
+    max_green = getattr(args, "max_green", None)
+    if max_green is not None:
+        conf["global_settings"]["max_green"] = max_green
+    return conf
+
+
 def main(args):
-    conf = INTERSECTION_CONFIGS[args.intersection_config]
+    conf = run_config(args)
     test_name = args.test_name or args.controller
 
     _, blockage_manager = build_blockage_manager(args.blockage_scenario)
@@ -264,6 +286,7 @@ def main(args):
     }
     manifest = build_manifest(args.controller, args, args.intersection_config, conf)
     manifest["test_name"] = test_name
+    add_max_green_setting(manifest, conf["global_settings"]["max_green"])
     flag_config = movement_flag_config_from_args(args)
     ctx = setup_run(conf, test_name, args.simulation_config, run_meta,
                     use_gui=args.use_gui, seed=args.seed,

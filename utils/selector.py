@@ -42,7 +42,8 @@ H_SAT_THROUGH_S = 2.143
 H_SAT_LEFT_S = 2.143
 # K18: a window is shrinking only when last < first - margin (strict at 0).
 SHRINK_MARGIN_VEH = 0
-# K19: longest green the receiver may grow to, from configurations.py.
+# K19: longest green the receiver may grow to. This is only the default; a run
+# passes its own max_green to RuleTableSelector.
 MAX_GREEN_S = _SETTINGS["max_green"]
 # K20: greens per lane averaged for a donor's demand; not an alias of K03.
 DONOR_V_WINDOW_GREENS = 3
@@ -302,15 +303,15 @@ class Allocation:
         return RECEIVER_BOUND_NONE
 
 
-def allocate(dg_requested, receiver_green, donors):
-    dg_capped = max(0, min(dg_requested, MAX_GREEN_S - receiver_green))
+def allocate(dg_requested, receiver_green, donors, max_green):
+    dg_capped = max(0, min(dg_requested, max_green - receiver_green))
     ordered = take_from_donors(donors, dg_capped)
     given = sum(donor.given for donor in ordered)
     return Allocation(dg_requested=dg_requested, dg_capped=dg_capped, donors=ordered,
                       given=given, short_by=dg_capped - given)
 
 
-def apply_allocation(plan, receiver, allocation):
+def apply_allocation(plan, receiver, allocation, max_green):
     """Rule 4: receiver grows by what was given, donors shrink by their share."""
     splits = dict(plan.splits)
     splits[receiver] += allocation.given
@@ -318,7 +319,7 @@ def apply_allocation(plan, receiver, allocation):
         splits[donor.phase] -= donor.given
     new_plan = plan.with_splits(splits)
     assert new_plan.greens_sum == plan.greens_sum
-    assert all(MIN_GREEN_S <= green <= MAX_GREEN_S for green in splits.values())
+    assert all(MIN_GREEN_S <= green <= max_green for green in splits.values())
     return new_plan
 
 
@@ -392,10 +393,12 @@ def fill_allocation(row, allocation):
 class RuleTableSelector:
     """One instance per run; keeps per-intersection command state and every
     row it has produced. flag_config is the run's FlagConfig: its k_flag is
-    the decision window (K03)."""
+    the decision window (K03). max_green is the run's longest green (K19);
+    it must match what the PhaseHandlers clamp to."""
 
-    def __init__(self, intersections, flag_config):
+    def __init__(self, intersections, flag_config, max_green=MAX_GREEN_S):
         self.decision_window_greens = flag_config.k_flag
+        self.max_green = max_green
         self.states = {lanes.tls: IntersectionState(lanes) for lanes in intersections}
         self.rows = []
 
@@ -549,7 +552,7 @@ class RuleTableSelector:
         if allocation.given == 0:
             row["outcome"] = OUT_OF_SCOPE
             return None, row
-        new_plan = apply_allocation(plan, phase, allocation)
+        new_plan = apply_allocation(plan, phase, allocation, self.max_green)
         row.update(outcome=NEW_COMMAND, plan_after=new_plan.text)
         if state.base_plan is None:
             state.base_plan = plan
@@ -579,7 +582,7 @@ class RuleTableSelector:
                                  plan.splits[phase])
             if donor is not None:
                 donors.append(donor)
-        return allocate(dg_requested, plan.splits[receiver], donors)
+        return allocate(dg_requested, plan.splits[receiver], donors, self.max_green)
 
     # --- decision point (rules 5-6) ----------------------------------------------
 
@@ -639,7 +642,7 @@ class RuleTableSelector:
         if allocation.given == 0:
             row["outcome"] = AT_FLOOR
             return None, row
-        new_plan = apply_allocation(plan, command.phase, allocation)
+        new_plan = apply_allocation(plan, command.phase, allocation, self.max_green)
         row.update(outcome=ADD, plan_after=new_plan.text)
         command.giving_phases |= allocation.giving_phases
         command.effective_t = None
