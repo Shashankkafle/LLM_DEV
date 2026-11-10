@@ -27,3 +27,4 @@ tests/artifacts/*
 *.secrets
 .vllm_serve_cmd
 scratchpad/
+report_sheet
