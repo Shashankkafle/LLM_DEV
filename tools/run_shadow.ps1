@@ -34,6 +34,8 @@ function New-ScenarioRows {
     $c4 = "--blockage_scenario $DataDir/scenarios/c4_two_lane_west_2_2_1200s.json"
     # Longest first so the 9000-step runs don't finish last.
     @(
+        @{ Name = "cross_r1800"; Config = "anon_4_4_hangzhou_real_cross_2_3_r1800.sumocfg"; Steps = 9000; Extra = "" }
+        @{ Name = "cross_r1500"; Config = "anon_4_4_hangzhou_real_cross_2_3_r1500.sumocfg"; Steps = 9000; Extra = "" }
         @{ Name = "cross_r1200"; Config = "anon_4_4_hangzhou_real_cross_2_3_r1200.sumocfg"; Steps = 9000; Extra = "" }
         @{ Name = "h2_steady"; Config = "anon_4_4_hangzhou_real_h2_steady.sumocfg"; Steps = 7200; Extra = "" }
         @{ Name = "cross_1h"; Config = "anon_4_4_hangzhou_real_cross_2_3_1h.sumocfg"; Steps = 3600; Extra = "" }
