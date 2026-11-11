@@ -8,6 +8,8 @@
 #   bash tools/thesis_llm_arm.sh full 2 --dry_run   # print the plan, run nothing
 #   bash tools/thesis_llm_arm.sh repair             # fill in missing run_times / thesis_arm records
 #   VLLM_PORT=8010 bash tools/thesis_llm_arm.sh ... # if something else holds 8000
+#   THESIS_ROWS="cross_r1500 cross_r1800" bash tools/thesis_llm_arm.sh full 2
+#                                                   # other scenario rows, seeds 1-2 each
 #
 # Both modes first make sure the vLLM server is up and serving the paper 2
 # weights, and start it if nothing is listening. Runs are the paper 2 runner
@@ -57,14 +59,26 @@ declare -A SUMOCFG=(
     [hzreal_none]="$DATASET/anon_4_4_hangzhou_real.sumocfg"
     [cross_1h]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_1h.sumocfg"
     [cross_r1200]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_r1200.sumocfg"
+    [cross_r1500]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_r1500.sumocfg"
+    [cross_r1800]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_r1800.sumocfg"
 )
-RUN_ORDER=(
-    "cross_r1200 1" "cross_1h 1" "hzreal_none 1"
-    "cross_r1200 2" "cross_1h 2" "hzreal_none 2"
-)
+DEFAULT_ROWS="cross_r1200 cross_1h hzreal_none"
+SEEDS=(1 2)
+
+# Every row for seed 1, then every row for seed 2.
+RUN_ORDER=()
+for seed in "${SEEDS[@]}"; do
+    for row in ${THESIS_ROWS:-$DEFAULT_ROWS}; do
+        RUN_ORDER+=("$row $seed")
+    done
+done
 
 log() { echo "[$(date '+%F %T')] $*"; }
 die() { log "ERROR: $*"; exit 1; }
+
+for row in ${THESIS_ROWS:-$DEFAULT_ROWS}; do
+    [ -n "${SUMOCFG[$row]:-}" ] || die "unknown row '$row'. Known: ${!SUMOCFG[*]}"
+done
 
 # --- server ---------------------------------------------------------------
 
@@ -271,7 +285,7 @@ full() {
     fi
 
     ensure_server
-    log "6 runs, $parallel in parallel, horizon $HORIZON"
+    log "${#RUN_ORDER[@]} runs, $parallel in parallel, horizon $HORIZON"
     for entry in "${RUN_ORDER[@]}"; do
         read -r scenario seed <<< "$entry"
         run_dir="$(newest_run_dir "$RUN_GROUP" "$(test_name_of "$scenario" "$seed")")"
