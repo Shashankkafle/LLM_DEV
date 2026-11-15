@@ -213,7 +213,10 @@ class SumoEnv:
     def get_current_step(self):
         return traci.simulation.getCurrentTime() // 1000  # Convert milliseconds to seconds
     
-    def set_phase(self, intersection_id, phase_config):
+    def set_phase(self, intersection_id, phase_config, initial=False):
+        """initial=True marks the state a controller sets before the first
+        step: its log record has no previous phase, because what SUMO showed
+        before was the net file's program, not a phase of this run."""
         n_links = len(traci.trafficlight.getControlledLinks(intersection_id))
         if len(phase_config) != n_links:
             raise ValueError(
@@ -224,11 +227,13 @@ class SumoEnv:
 
         if self.set_phase_sequence_dir:
             log_file = self.set_phase_sequence_dir / f"{intersection_id}{PHASE_SEQUENCE_FILENAME_SUFFIX}"
-            previous_phase = self.get_current_phase(intersection_id)
+            previous_phase = None if initial else self.get_current_phase(intersection_id)
+            previous_phase_name = (None if initial else
+                                   get_phase_name(self.intersection_config, previous_phase))
             change_dict = {
                 "step": self.get_current_step(),
                 "prev_phase": previous_phase,
-                "prev_phase_name": get_phase_name(self.intersection_config, previous_phase),
+                "prev_phase_name": previous_phase_name,
                 "new_phase": phase_config,
                 "new_phase_name": get_phase_name(self.intersection_config, phase_config),
             }

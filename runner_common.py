@@ -159,7 +159,8 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
               seed=None, verbose_metrics=False, blockage_manager=None,
               manifest=None, run_group=None, logs_dir=None,
               oversat_shadow=False, oversat_listener=None, extra_sumo_args=(),
-              movement_flag_config=None, regime_cycle_s=DEFAULT_CYCLE_S):
+              movement_flag_config=None, regime_cycle_s=DEFAULT_CYCLE_S,
+              own_signals_from_start=False):
     """Build the run stack every controller shares.
 
     run_meta is written to replay_meta.json (and the manifest, when given, to
@@ -171,6 +172,14 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
     slot and evaluates once every regime_cycle_s seconds; and with them the
     evaluation logs (ground_truth.csv, network_metrics.csv) and the lane
     state they are rebuilt from (lane_halting.csv, lane_entries.csv).
+
+    own_signals_from_start sends the start phase's green to every
+    intersection before the first step. Without it SUMO runs the net file's
+    program at an intersection until the controller's first phase CHANGE
+    there, so a controller that can hold its start phase (MaxPressure, LLM)
+    must set it. FixedTime and the cyclic controllers change phase at their
+    first decision and are left as they were, so their past runs stay
+    reproducible.
     """
     if movement_flag_config is not None and oversat_listener is not None:
         raise ValueError("movement flags and oversat_listener both need the "
@@ -181,6 +190,7 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
         manifest["movement_flags_columns"] = list(FLAG_COLUMNS)
         add_flag_settings(manifest, movement_flag_config, regime_cycle_s)
     if manifest is not None:
+        manifest["signals_owned_from_start"] = own_signals_from_start
         save_manifest(records_dir, manifest)
     # Copy the scenario into the run dir so the run stays reproducible even if
     # the original scenario file later changes.
@@ -230,6 +240,9 @@ def setup_run(conf, test_name, simulation_config, run_meta, use_gui=False,
                                       replay_recorder=replay_recorder)
         for intersection_id in env.get_intersections()
     }
+    if own_signals_from_start:
+        for handler in handlers.values():
+            handler.take_control()
     return RunContext(records_dir, env, recorder, replay_recorder, handlers,
                       oversaturation, executor_log, movement_flags, diagnoser,
                       lane_state_log)
@@ -311,6 +324,7 @@ def run_control_loop(ctx, simulation_steps, decide):
             for intersection_id, handler in ctx.handlers.items():
                 handler.step()
                 if handler.switch_phase:
+                    handler.assert_signal_is_ours()
                     phase, green = _phase_and_green(decide(step, intersection_id, handler))
                     ctx.recorder.record_decision_wait()
                     handler.activate_phase(phase, green=green)
@@ -352,6 +366,7 @@ def run_control_loop_batched(ctx, simulation_steps, decide_batch):
             for intersection_id, handler in ctx.handlers.items():
                 handler.step()
                 if handler.switch_phase:
+                    handler.assert_signal_is_ours()
                     pending.append((intersection_id, handler))
             if pending:
                 next_phases = decide_batch(step, pending)
