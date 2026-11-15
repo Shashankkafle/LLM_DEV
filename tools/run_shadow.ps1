@@ -37,6 +37,9 @@ function New-ScenarioRows {
         @{ Name = "cross_r1800"; Config = "anon_4_4_hangzhou_real_cross_2_3_r1800.sumocfg"; Steps = 9000; Extra = "" }
         @{ Name = "cross_r1500"; Config = "anon_4_4_hangzhou_real_cross_2_3_r1500.sumocfg"; Steps = 9000; Extra = "" }
         @{ Name = "cross_r1200"; Config = "anon_4_4_hangzhou_real_cross_2_3_r1200.sumocfg"; Steps = 9000; Extra = "" }
+        @{ Name = "cross_r900"; Config = "anon_4_4_hangzhou_real_cross_2_3_r900.sumocfg"; Steps = 9000; Extra = "" }
+        @{ Name = "cross_r600"; Config = "anon_4_4_hangzhou_real_cross_2_3_r600.sumocfg"; Steps = 9000; Extra = "" }
+        @{ Name = "cross_r300"; Config = "anon_4_4_hangzhou_real_cross_2_3_r300.sumocfg"; Steps = 9000; Extra = "" }
         @{ Name = "h2_steady"; Config = "anon_4_4_hangzhou_real_h2_steady.sumocfg"; Steps = 7200; Extra = "" }
         @{ Name = "cross_1h"; Config = "anon_4_4_hangzhou_real_cross_2_3_1h.sumocfg"; Steps = 3600; Extra = "" }
         @{ Name = "hzreal_none"; Config = "anon_4_4_hangzhou_real.sumocfg"; Steps = 3600; Extra = "" }
