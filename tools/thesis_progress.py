@@ -1,7 +1,7 @@
 """One line per thesis-arm run: simulated time vs wall time, and an ETA.
 
-    python tools/thesis_progress.py                       # logs/thesis_llm_arm
-    python tools/thesis_progress.py logs/thesis_llm_arm_smoke
+    python tools/thesis_progress.py                       # logs/thesis_llm_arm_v2
+    python tools/thesis_progress.py logs/thesis_llm_arm_v2_smoke
     watch -n 60 python tools/thesis_progress.py
 
 The ETA extrapolates the run's average pace so far to its horizon. For
@@ -16,7 +16,7 @@ import json
 import os
 from datetime import datetime, timedelta
 
-DEFAULT_GROUP = "logs/thesis_llm_arm"
+DEFAULT_GROUP = "logs/thesis_llm_arm_v2"
 
 
 def last_step(step_log):

@@ -31,16 +31,33 @@ can keep a few vehicles in the network to 7200, since teleport is off. In an
 offline test with a phase-cycling stand-in controller, both ran the full 7200
 steps. cross_r1200 has demand through 9000 s and always runs the full 7200.
 
+## v2: the controller owns every signal from step 0
+
+The first batch (`logs/thesis_llm_arm`, 2026-11-08/09) is superseded. Its runner
+sent a state to SUMO only on a phase change, so the net file's static program
+(8 phases x 35 s, right turns protected) ran at an intersection until the
+controller's first change there, while the decision log recorded ETWT as held.
+From commit "MP and LLM controllers own every signal from step 0" the runner sets
+the ETWT green at step 0, and each `phase_sequences` file starts with a step-0
+record. Prompt, parser and decision timing are unchanged (same prompt hash).
+
+v2 runs go to `logs/thesis_llm_arm_v2`; the old folder is not read or written.
+The smoke test and every finished run are checked by
+`tools/check_signal_ownership.py` (result in `<run_dir>/signal_ownership.txt`).
+
 ## Commands (on the GPU box, repo `~/LLM_DEV`)
 
 ```bash
-cd ~/LLM_DEV && git fetch origin && git checkout thesis-llm-arm && git pull
+cd ~/LLM_DEV && git fetch origin && git checkout thesis-llm-arm-r1500-r1800 && git pull
 uv sync --locked
 tmux new -s thesis                               # or attach to it
 
 bash tools/thesis_llm_arm.sh smoke               # starts vLLM if needed; about 5 min
-bash tools/thesis_llm_arm.sh full 2 --dry_run    # print the 6 runner commands
-bash tools/thesis_llm_arm.sh full 2 2>&1 | tee logs/thesis_llm_arm_launch.log
+bash tools/thesis_llm_arm.sh full 2 --dry_run    # print the runner commands
+bash tools/thesis_llm_arm.sh full 2 2>&1 | tee logs/thesis_llm_arm_v2_launch.log
+
+# the r1500 / r1800 rows, seeds 1-2 each
+THESIS_ROWS="cross_r1500 cross_r1800" bash tools/thesis_llm_arm.sh full 2 2>&1     | tee logs/thesis_llm_arm_v2_launch_r1500_r1800.log
 ```
 
 Progress, one line per run:
@@ -59,9 +76,9 @@ too much GPU memory, and it says why.
 
 ## Outputs
 
-- Runs: `logs/thesis_llm_arm/llm_<scenario>_seed<N>_<timestamp>/`, with the
+- Runs: `logs/thesis_llm_arm_v2/llm_<scenario>_seed<N>_<timestamp>/`, with the
   `thesis_arm` block in `run_manifest.json`
-- Console logs: `logs/thesis_llm_arm/llm_<scenario>_seed<N>.console.log`
-- Smoke: `logs/thesis_llm_arm_smoke/.../smoke_report.txt`
+- Console logs: `logs/thesis_llm_arm_v2/llm_<scenario>_seed<N>.console.log`
+- Smoke: `logs/thesis_llm_arm_v2_smoke/.../smoke_report.txt`
 - Wall-clock per run: appended to `~/run_times.txt` in the paper 2 format
 - Server log, when the launcher started the server: `logs/vllm_server_thesis.log`

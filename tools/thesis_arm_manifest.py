@@ -2,9 +2,9 @@
 
     python tools/thesis_arm_manifest.py <run_dir> --scenario cross_r1200 --seed 1 --horizon 7200
 
-Writes a "thesis_arm" block into <run_dir>/run_manifest.json. The runner is left
-untouched (the row is defined as the paper 2 setup), so this runs after it exits,
-crashed or not.
+Writes a "thesis_arm" block into <run_dir>/run_manifest.json. The runner's
+prompt, parser and decision timing are paper 2's (the row is defined as the
+paper 2 setup), so this runs after it exits, crashed or not.
 
 The prompt hash covers what the model is shown: the system prompt the run
 actually sent (as recorded in the manifest) plus the source of
@@ -35,6 +35,10 @@ NOTES = [
     "Server started with VLLM_USE_FLASHINFER_SAMPLER=0 (PyTorch sampler): flashinfer "
     "could not JIT-build its sampler with the box's CUDA 11 nvcc. Greedy decoding is "
     "argmax under either sampler.",
+    "The controller sets every signal to the ETWT green at step 0 "
+    "(manifest signals_owned_from_start). Paper 2 and the logs/thesis_llm_arm runs "
+    "did not: the net file's static program ran at an intersection until the "
+    "controller's first phase change there.",
     "The control loop stops early once SUMO expects no more vehicles, so "
     "last_sim_step can be below horizon_s.",
 ]

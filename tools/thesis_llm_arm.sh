@@ -17,8 +17,8 @@
 # the vllm: model path changed. A run that already completed is skipped, so
 # re-running `full` after a crash resumes.
 #
-# Logs:      logs/thesis_llm_arm/llm_<scenario>_seed<N>_<timestamp>/
-# Console:   logs/thesis_llm_arm/llm_<scenario>_seed<N>.console.log
+# Logs:      logs/thesis_llm_arm_v2/llm_<scenario>_seed<N>_<timestamp>/
+# Console:   logs/thesis_llm_arm_v2/llm_<scenario>_seed<N>.console.log
 # Wall-clock per run is appended to ~/run_times.txt in the paper 2 format.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -45,8 +45,11 @@ PYTHON="${PYTHON:-.venv/bin/python}"
 # Overridable only so the launcher itself can be tested quickly; the arm is 7200.
 HORIZON="${THESIS_HORIZON:-7200}"
 SMOKE_STEPS=120
-RUN_GROUP=thesis_llm_arm
-SMOKE_GROUP=thesis_llm_arm_smoke
+# v2: the runs in logs/thesis_llm_arm predate signal ownership from step 0
+# (the net file's program ran until each intersection's first phase change).
+# A new group keeps them untouched and stops `full` from skipping them as done.
+RUN_GROUP=thesis_llm_arm_v2
+SMOKE_GROUP=thesis_llm_arm_v2_smoke
 RUN_TIMES="${RUN_TIMES:-$HOME/run_times.txt}"
 SERVER_LOG=logs/vllm_server_thesis.log
 SERVER_WAIT_S=1200
@@ -220,6 +223,7 @@ run_one() {
     "$PYTHON" tools/thesis_arm_manifest.py "$run_dir" \
         --scenario "$scenario" --seed "$seed" --horizon "$steps" \
         || log "WARN: thesis_arm block not written for $test_name; run: bash tools/thesis_llm_arm.sh repair"
+    "$PYTHON" tools/check_signal_ownership.py "$run_dir" > "$run_dir/signal_ownership.txt" 2>&1         || log "WARN: $test_name failed the signal ownership check; see $run_dir/signal_ownership.txt"
     log "end $test_name exit=$exit_code run_dir=$run_dir"
 }
 
@@ -268,6 +272,7 @@ smoke() {
     [ -n "$run_dir" ] || die "smoke run left no run dir"
     local report_ok=yes
     "$PYTHON" tools/thesis_smoke_report.py "$run_dir" | tee "$run_dir/smoke_report.txt" || report_ok=no
+    "$PYTHON" tools/check_signal_ownership.py "$run_dir" | tee -a "$run_dir/smoke_report.txt" || report_ok=no
     log "smoke report saved to $run_dir/smoke_report.txt (passed: $report_ok)"
     [ "$report_ok" = yes ]
 }
