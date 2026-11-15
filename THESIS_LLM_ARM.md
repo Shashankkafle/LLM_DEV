@@ -56,6 +56,9 @@ bash tools/thesis_llm_arm.sh smoke               # starts vLLM if needed; about 
 bash tools/thesis_llm_arm.sh full 2 --dry_run    # print the runner commands
 bash tools/thesis_llm_arm.sh full 2 2>&1 | tee logs/thesis_llm_arm_v2_launch.log
 
+# the lower rates of the cross_2_3 family (no earlier LLM runs exist for these)
+THESIS_ROWS="cross_r300 cross_r600 cross_r900" bash tools/thesis_llm_arm.sh full 2 2>&1     | tee logs/thesis_llm_arm_v2_launch_r300_r900.log
+
 # the r1500 / r1800 rows, seeds 1-2 each
 THESIS_ROWS="cross_r1500 cross_r1800" bash tools/thesis_llm_arm.sh full 2 2>&1     | tee logs/thesis_llm_arm_v2_launch_r1500_r1800.log
 ```

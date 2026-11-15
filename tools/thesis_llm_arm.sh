@@ -9,6 +9,7 @@
 #   bash tools/thesis_llm_arm.sh repair             # fill in missing run_times / thesis_arm records
 #   VLLM_PORT=8010 bash tools/thesis_llm_arm.sh ... # if something else holds 8000
 #   THESIS_ROWS="cross_r1500 cross_r1800" bash tools/thesis_llm_arm.sh full 2
+#   THESIS_ROWS="cross_r300 cross_r600 cross_r900" bash tools/thesis_llm_arm.sh full 2
 #                                                   # other scenario rows, seeds 1-2 each
 #
 # Both modes first make sure the vLLM server is up and serving the paper 2
@@ -61,6 +62,9 @@ DATASET=dataset/llm_light/Hangzhou/4_4
 declare -A SUMOCFG=(
     [hzreal_none]="$DATASET/anon_4_4_hangzhou_real.sumocfg"
     [cross_1h]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_1h.sumocfg"
+    [cross_r300]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_r300.sumocfg"
+    [cross_r600]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_r600.sumocfg"
+    [cross_r900]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_r900.sumocfg"
     [cross_r1200]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_r1200.sumocfg"
     [cross_r1500]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_r1500.sumocfg"
     [cross_r1800]="$DATASET/anon_4_4_hangzhou_real_cross_2_3_r1800.sumocfg"
