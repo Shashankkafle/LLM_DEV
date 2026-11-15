@@ -294,7 +294,8 @@ def main(args):
                     run_group=args.run_group, logs_dir=args.logs_dir,
                     oversat_shadow=getattr(args, "oversat_shadow", False),
                     movement_flag_config=flag_config,
-                    regime_cycle_s=regime_cycle_s_from_args(args))
+                    regime_cycle_s=regime_cycle_s_from_args(args),
+                    own_signals_from_start=args.controller == "maxpressure")
     controller = build_run_controller(args.controller, conf, ctx, flag_config)
 
     print(f"Controller    : {args.controller}")

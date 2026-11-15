@@ -232,7 +232,8 @@ def main(args):
                     run_group=args.run_group, logs_dir=args.logs_dir,
                     oversat_shadow=getattr(args, "oversat_shadow", False),
                     movement_flag_config=movement_flag_config_from_args(args),
-                    regime_cycle_s=regime_cycle_s_from_args(args))
+                    regime_cycle_s=regime_cycle_s_from_args(args),
+                    own_signals_from_start=True)
     llm_activity.start(ctx.records_dir, args.logs_dir, {
         "experiment": args.run_group,
         "slug": args.test_name,

@@ -219,6 +219,21 @@ def build_sumo_cmd(sumocfg_path: str, use_gui: bool, output_dir=None, seed=None)
     return cmd
 
 
+def apply_events(phase_schedule, sim_time):
+    """Force-set every signal state the live run set at sim_time."""
+    for event in phase_schedule.get(sim_time, []):
+        intersection_id = event["intersection_id"]
+        phase_state = event["phase"]
+        phase_name = event.get("phase_name", "")
+        try:
+            traci.trafficlight.setRedYellowGreenState(intersection_id, phase_state)
+            print(f"[t={sim_time}] Applied phase '{phase_name}' "
+                  f"({phase_state}) to '{intersection_id}'")
+        except traci.exceptions.TraCIException as exc:
+            print(f"[t={sim_time}] FAILED to set phase on "
+                  f"'{intersection_id}': {exc}", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -323,6 +338,9 @@ def main():
 
     status = "crashed"
     try:
+        # Step-0 events are the states a live run set before its first
+        # simulationStep(); the loop below only sees sim time 1 onwards.
+        apply_events(phase_schedule, 0)
         for step in range(total_steps):
             traci.simulationStep()
             # Same clock as the live runs: SumoEnv ticks the manager with
@@ -336,26 +354,7 @@ def main():
             # index. Keying on the same clock applies every change on the same
             # tick the live run did; keying on `step` applied them 1 s late and
             # the replay drifted from the original metrics.
-            sim_time = int(traci.simulation.getTime())
-            for event in phase_schedule.get(sim_time, []):
-                intersection_id = event["intersection_id"]
-                phase_state = event["phase"]
-                phase_name = event.get("phase_name", "")
-
-                try:
-                    traci.trafficlight.setRedYellowGreenState(
-                        intersection_id, phase_state
-                    )
-                    print(
-                        f"[t={sim_time}] Applied phase '{phase_name}' "
-                        f"({phase_state}) to '{intersection_id}'"
-                    )
-                except traci.exceptions.TraCIException as exc:
-                    print(
-                        f"[t={sim_time}] FAILED to set phase on "
-                        f"'{intersection_id}': {exc}",
-                        file=sys.stderr,
-                    )
+            apply_events(phase_schedule, int(traci.simulation.getTime()))
 
             # Record per-step metrics every step.
             recorder.record_step_summary(step)
