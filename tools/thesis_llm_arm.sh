@@ -10,6 +10,8 @@
 #   VLLM_PORT=8010 bash tools/thesis_llm_arm.sh ... # if something else holds 8000
 #   THESIS_ROWS="cross_r1500 cross_r1800" bash tools/thesis_llm_arm.sh full 2
 #   THESIS_ROWS="cross_r300 cross_r600 cross_r900" bash tools/thesis_llm_arm.sh full 2
+#   THESIS_ORDER=row THESIS_ROWS="hzreal_none cross_1h cross_r1200" bash tools/thesis_llm_arm.sh full 2
+#                                                   # both seeds of a row before the next row
 #                                                   # other scenario rows, seeds 1-2 each
 #
 # Both modes first make sure the vLLM server is up and serving the paper 2
@@ -72,13 +74,23 @@ declare -A SUMOCFG=(
 DEFAULT_ROWS="cross_r1200 cross_1h hzreal_none"
 SEEDS=(1 2)
 
-# Every row for seed 1, then every row for seed 2.
+# Default: every row for seed 1, then every row for seed 2.
+# THESIS_ORDER=row: both seeds of the first row, then both of the next, so the
+# rows listed first in THESIS_ROWS finish first.
 RUN_ORDER=()
-for seed in "${SEEDS[@]}"; do
+if [ "${THESIS_ORDER:-seed}" = row ]; then
     for row in ${THESIS_ROWS:-$DEFAULT_ROWS}; do
-        RUN_ORDER+=("$row $seed")
+        for seed in "${SEEDS[@]}"; do
+            RUN_ORDER+=("$row $seed")
+        done
     done
-done
+else
+    for seed in "${SEEDS[@]}"; do
+        for row in ${THESIS_ROWS:-$DEFAULT_ROWS}; do
+            RUN_ORDER+=("$row $seed")
+        done
+    done
+fi
 
 log() { echo "[$(date '+%F %T')] $*"; }
 die() { log "ERROR: $*"; exit 1; }
